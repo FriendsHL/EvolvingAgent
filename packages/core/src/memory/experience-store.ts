@@ -1,0 +1,214 @@
+import { readFile, writeFile, readdir, mkdir, rename } from 'node:fs/promises'
+import { join } from 'node:path'
+import type { Experience } from '../types.js'
+
+const ACTIVE_CAP = 200
+const STALE_CAP = 100
+const STALE_DAYS = 30
+const ARCHIVE_DAYS = 60
+
+/**
+ * Experience Store — JSON file-based persistence.
+ *
+ * Three pools:
+ *   Active  (data/memory/experiences/)  — cap 200
+ *   Stale   (data/memory/stale/)        — cap 100
+ *   Archive (data/memory/archive/)      — unlimited
+ */
+export class ExperienceStore {
+  private basePath: string
+  private activePath: string
+  private stalePath: string
+  private archivePath: string
+
+  // In-memory cache
+  private active = new Map<string, Experience>()
+  private stale = new Map<string, Experience>()
+
+  constructor(basePath: string) {
+    this.basePath = basePath
+    this.activePath = join(basePath, 'experiences')
+    this.stalePath = join(basePath, 'stale')
+    this.archivePath = join(basePath, 'archive')
+  }
+
+  async init(): Promise<void> {
+    await mkdir(this.activePath, { recursive: true })
+    await mkdir(this.stalePath, { recursive: true })
+    await mkdir(this.archivePath, { recursive: true })
+
+    // Load active + stale into memory
+    this.active = await this.loadPool(this.activePath)
+    this.stale = await this.loadPool(this.stalePath)
+  }
+
+  private async loadPool(dir: string): Promise<Map<string, Experience>> {
+    const pool = new Map<string, Experience>()
+    try {
+      const files = await readdir(dir)
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue
+        try {
+          const data = await readFile(join(dir, file), 'utf-8')
+          const exp = JSON.parse(data) as Experience
+          pool.set(exp.id, exp)
+        } catch {
+          // Skip corrupted files
+        }
+      }
+    } catch {
+      // Directory may not exist yet
+    }
+    return pool
+  }
+
+  async save(experience: Experience): Promise<void> {
+    this.active.set(experience.id, experience)
+    await writeFile(
+      join(this.activePath, `${experience.id}.json`),
+      JSON.stringify(experience, null, 2),
+      'utf-8',
+    )
+
+    // Enforce cap
+    if (this.active.size > ACTIVE_CAP) {
+      await this.evictLowestHealth(this.active, this.activePath, this.stale, this.stalePath)
+    }
+    if (this.stale.size > STALE_CAP) {
+      await this.evictLowestHealth(this.stale, this.stalePath, null, this.archivePath)
+    }
+  }
+
+  get(id: string): Experience | undefined {
+    return this.active.get(id) ?? this.stale.get(id)
+  }
+
+  getAll(pool: 'active' | 'stale' | 'all' = 'active'): Experience[] {
+    if (pool === 'active') return [...this.active.values()]
+    if (pool === 'stale') return [...this.stale.values()]
+    return [...this.active.values(), ...this.stale.values()]
+  }
+
+  getAllTasks(): string[] {
+    return this.getAll('all').map((e) => e.task)
+  }
+
+  /** Mark an experience as referenced (updates health) */
+  async markReferenced(id: string): Promise<void> {
+    const exp = this.active.get(id) ?? this.stale.get(id)
+    if (!exp) return
+
+    exp.health.referencedCount++
+    exp.health.lastReferenced = new Date().toISOString()
+
+    // If in stale pool, promote back to active
+    if (this.stale.has(id)) {
+      this.stale.delete(id)
+      this.active.set(id, exp)
+      // Move file
+      try {
+        await rename(join(this.stalePath, `${id}.json`), join(this.activePath, `${id}.json`))
+      } catch {
+        // File might not exist
+      }
+    }
+
+    await writeFile(
+      join(this.activePath, `${exp.id}.json`),
+      JSON.stringify(exp, null, 2),
+      'utf-8',
+    )
+  }
+
+  /** Run periodic health check and pool transitions */
+  async maintain(): Promise<{ movedToStale: number; movedToArchive: number }> {
+    const now = Date.now()
+    let movedToStale = 0
+    let movedToArchive = 0
+
+    // Active → Stale: unreferenced for STALE_DAYS
+    for (const [id, exp] of this.active) {
+      const healthScore = this.computeHealthScore(exp)
+      const daysSinceRef = exp.health.lastReferenced
+        ? (now - new Date(exp.health.lastReferenced).getTime()) / (1000 * 60 * 60 * 24)
+        : (now - new Date(exp.timestamp).getTime()) / (1000 * 60 * 60 * 24)
+
+      if (healthScore < 0.2 || daysSinceRef > STALE_DAYS) {
+        this.active.delete(id)
+        this.stale.set(id, exp)
+        try {
+          await rename(join(this.activePath, `${id}.json`), join(this.stalePath, `${id}.json`))
+        } catch {
+          // Write to stale directly
+          await writeFile(join(this.stalePath, `${id}.json`), JSON.stringify(exp, null, 2), 'utf-8')
+        }
+        movedToStale++
+      }
+    }
+
+    // Stale → Archive: unreferenced for ARCHIVE_DAYS
+    for (const [id, exp] of this.stale) {
+      const healthScore = this.computeHealthScore(exp)
+      const daysSinceRef = exp.health.lastReferenced
+        ? (now - new Date(exp.health.lastReferenced).getTime()) / (1000 * 60 * 60 * 24)
+        : (now - new Date(exp.timestamp).getTime()) / (1000 * 60 * 60 * 24)
+
+      if (healthScore < 0.1 || daysSinceRef > ARCHIVE_DAYS) {
+        this.stale.delete(id)
+        try {
+          await rename(join(this.stalePath, `${id}.json`), join(this.archivePath, `${id}.json`))
+        } catch {
+          await writeFile(join(this.archivePath, `${id}.json`), JSON.stringify(exp, null, 2), 'utf-8')
+        }
+        movedToArchive++
+      }
+    }
+
+    return { movedToStale, movedToArchive }
+  }
+
+  private computeHealthScore(exp: Experience): number {
+    const now = Date.now()
+    const lastRef = exp.health.lastReferenced
+      ? new Date(exp.health.lastReferenced).getTime()
+      : new Date(exp.timestamp).getTime()
+    const daysSince = (now - lastRef) / (1000 * 60 * 60 * 24)
+
+    const lambda = 0.05
+    const recency = Math.exp(-lambda * daysSince) // 14-day half-life
+    const frequency = Math.min(1.0, exp.health.referencedCount / 10)
+    const quality = exp.admissionScore * (1 - 0.5 * Math.min(1, exp.health.contradictionCount / 3))
+
+    return 0.3 * recency + 0.3 * frequency + 0.4 * quality
+  }
+
+  private async evictLowestHealth(
+    from: Map<string, Experience>,
+    fromDir: string,
+    to: Map<string, Experience> | null,
+    toDir: string,
+  ): Promise<void> {
+    let lowestId = ''
+    let lowestScore = Infinity
+
+    for (const [id, exp] of from) {
+      const score = this.computeHealthScore(exp)
+      if (score < lowestScore) {
+        lowestScore = score
+        lowestId = id
+      }
+    }
+
+    if (!lowestId) return
+
+    const exp = from.get(lowestId)!
+    from.delete(lowestId)
+    if (to) to.set(lowestId, exp)
+
+    try {
+      await rename(join(fromDir, `${lowestId}.json`), join(toDir, `${lowestId}.json`))
+    } catch {
+      await writeFile(join(toDir, `${lowestId}.json`), JSON.stringify(exp, null, 2), 'utf-8')
+    }
+  }
+}
