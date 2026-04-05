@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { generateWithTools, buildMessages, type GenerateResult } from '../llm/provider.js'
+import { type LLMProvider, type GenerateResult } from '../llm/provider.js'
 import type { ExecutionStep, PromptConfig, Reflection } from '../types.js'
 
 const REFLECTOR_SYSTEM_PROMPT = `You are a post-execution reflector for an AI Agent. Analyze the task execution and produce a structured reflection.
@@ -28,6 +28,8 @@ const reflectionSchema = z.object({
 })
 
 export class Reflector {
+  constructor(private llm: LLMProvider) {}
+
   async reflect(
     task: string,
     steps: ExecutionStep[],
@@ -53,11 +55,11 @@ export class Reflector {
       history: [],
       experiences: [],
       currentInput,
-      provider: 'anthropic',
+      provider: this.llm.getProviderType(),
     }
 
-    const messages = buildMessages(config)
-    const result = await generateWithTools('reflector', messages)
+    const messages = this.llm.buildMessages(config)
+    const result = await this.llm.generate('reflector', messages)
 
     let reflection: Reflection
     let tags: string[] = []

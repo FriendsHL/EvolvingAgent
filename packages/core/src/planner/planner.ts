@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { generateWithTools, buildMessages, type GenerateResult } from '../llm/provider.js'
-import type { Experience, Plan, PlanStep, PromptConfig } from '../types.js'
+import { type LLMProvider, type GenerateResult } from '../llm/provider.js'
+import type { Experience, Plan, PromptConfig } from '../types.js'
 import { nanoid } from 'nanoid'
 
 const PLANNER_SYSTEM_PROMPT = `You are a task planner for an AI Agent system. Your job is to decompose user tasks into executable steps.
@@ -37,6 +37,8 @@ const planSchema = z.object({
 })
 
 export class Planner {
+  constructor(private llm: LLMProvider) {}
+
   async plan(
     userMessage: string,
     relatedExperiences: Experience[],
@@ -49,11 +51,11 @@ export class Planner {
       history,
       experiences: relatedExperiences,
       currentInput: userMessage,
-      provider: 'anthropic',
+      provider: this.llm.getProviderType(),
     }
 
-    const messages = buildMessages(config)
-    const result = await generateWithTools('planner', messages)
+    const messages = this.llm.buildMessages(config)
+    const result = await this.llm.generate('planner', messages)
 
     // Parse the plan from LLM response
     let plan: Plan

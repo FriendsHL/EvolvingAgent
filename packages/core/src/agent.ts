@@ -14,11 +14,12 @@ import { MemoryManager } from './memory/memory-manager.js'
 import { Planner } from './planner/planner.js'
 import { Executor } from './executor/executor.js'
 import { Reflector } from './reflector/reflector.js'
-import { generateWithTools, buildMessages } from './llm/provider.js'
+import { LLMProvider, type ProviderConfig, type PresetName } from './llm/provider.js'
 import type { PromptConfig, LLMCallMetrics } from './types.js'
 
 export interface AgentConfig {
   dataPath: string // Path to data/ directory
+  provider?: ProviderConfig | PresetName // LLM provider config or preset name (default: auto-detect from env)
 }
 
 type EventCallback = (event: AgentEvent) => void
@@ -37,6 +38,7 @@ export class Agent {
   private planner: Planner
   private executor: Executor
   private reflector: Reflector
+  private llm: LLMProvider
   private listeners: EventCallback[] = []
 
   constructor(private config: AgentConfig) {
@@ -46,6 +48,15 @@ export class Agent {
       status: 'active',
       totalCost: 0,
       totalTokens: 0,
+    }
+
+    // Initialize LLM provider
+    if (!config.provider) {
+      this.llm = LLMProvider.fromEnv()
+    } else if (typeof config.provider === 'string') {
+      this.llm = LLMProvider.fromPreset(config.provider)
+    } else {
+      this.llm = new LLMProvider(config.provider)
     }
 
     // Initialize tool registry with built-in tools
@@ -68,9 +79,9 @@ export class Agent {
     this.memory = new MemoryManager(config.dataPath)
 
     // Initialize components
-    this.planner = new Planner()
+    this.planner = new Planner(this.llm)
     this.executor = new Executor(this.tools, this.hooks)
-    this.reflector = new Reflector()
+    this.reflector = new Reflector(this.llm)
   }
 
   async init(): Promise<void> {
@@ -212,14 +223,14 @@ export class Agent {
       systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
       skills: [],
       knowledge: [],
-      history: this.memory.getHistory().slice(0, -1), // Exclude current message (it's in currentInput)
+      history: this.memory.getHistory().slice(0, -1),
       experiences: [],
       currentInput: userMessage,
-      provider: 'anthropic',
+      provider: this.llm.getProviderType(),
     }
 
-    const messages = buildMessages(config)
-    const result = await generateWithTools('executor', messages)
+    const messages = this.llm.buildMessages(config)
+    const result = await this.llm.generate('executor', messages)
     this.trackMetrics(result.metrics)
     return result.text
   }
@@ -253,11 +264,11 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
       history: this.memory.getHistory().slice(0, -1),
       experiences: [],
       currentInput: summaryPrompt,
-      provider: 'anthropic',
+      provider: this.llm.getProviderType(),
     }
 
-    const messages = buildMessages(config)
-    const result = await generateWithTools('executor', messages)
+    const messages = this.llm.buildMessages(config)
+    const result = await this.llm.generate('executor', messages)
     this.trackMetrics(result.metrics)
     return result.text
   }

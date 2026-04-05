@@ -242,7 +242,7 @@ export interface PromptConfig {
   history: Array<{ role: 'user' | 'assistant'; content: string }>
   experiences: Experience[]
   currentInput: string
-  provider: 'anthropic' | 'openai'
+  provider: 'anthropic' | 'openai' | 'openai-compatible'
 }
 
 // === Admission Scoring ===

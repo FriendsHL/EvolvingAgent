@@ -3,6 +3,9 @@
 export { Agent } from './agent.js'
 export type { AgentConfig } from './agent.js'
 
+export { LLMProvider, PROVIDER_PRESETS } from './llm/provider.js'
+export type { ProviderConfig, ProviderType, PresetName, ModelRole } from './llm/provider.js'
+
 export { ToolRegistry } from './tools/registry.js'
 export { shellTool } from './tools/shell.js'
 export { fileReadTool } from './tools/file-read.js'
