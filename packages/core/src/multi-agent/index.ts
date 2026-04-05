@@ -1,0 +1,8 @@
+export { MessageBus } from './message-bus.js'
+export type { InterAgentMessage, MessageType, InterAgentMessageHandler } from './message-bus.js'
+export { AgentCoordinator } from './coordinator.js'
+export type { AgentProfile } from './coordinator.js'
+export { TaskDelegator } from './delegation.js'
+export type { DelegationTask, DelegationResult } from './delegation.js'
+export { AGENT_TEMPLATES, profileFromTemplate } from './templates.js'
+export type { AgentTemplate } from './templates.js'

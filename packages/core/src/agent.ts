@@ -1,20 +1,36 @@
 import { nanoid } from 'nanoid'
-import type { AgentEvent, ExecutionStep, HookContext, Session } from './types.js'
+import type { AgentEvent, ExecutionStep, HookContext, Session, SkillContext, SkillResult } from './types.js'
 import { ToolRegistry } from './tools/registry.js'
 import { shellTool } from './tools/shell.js'
 import { fileReadTool } from './tools/file-read.js'
 import { fileWriteTool } from './tools/file-write.js'
 import { httpTool } from './tools/http.js'
+import { browserTool } from './tools/browser.js'
 import { HookRunner } from './hooks/hook-runner.js'
+import { HookCompiler } from './hooks/hook-compiler.js'
+import { HookSandbox } from './hooks/hook-sandbox.js'
 import { contextWindowGuard } from './hooks/core-hooks/context-window-guard.js'
 import { costHardLimit } from './hooks/core-hooks/cost-hard-limit.js'
 import { safetyCheck } from './hooks/core-hooks/safety-check.js'
 import { metricsCollectorHook, getCollectedMetrics } from './hooks/core-hooks/metrics-collector.js'
 import { MemoryManager } from './memory/memory-manager.js'
+import { Embedder } from './memory/embedder.js'
 import { Planner } from './planner/planner.js'
 import { Executor } from './executor/executor.js'
 import { Reflector } from './reflector/reflector.js'
 import { LLMProvider, type ProviderConfig, type PresetName } from './llm/provider.js'
+import { SkillRegistry } from './skills/skill-registry.js'
+import { SkillCompiler } from './skills/skill-compiler.js'
+import { SkillValidator } from './skills/skill-validator.js'
+import { webSearchSkill } from './skills/builtin/web-search.js'
+import { summarizeUrlSkill } from './skills/builtin/summarize-url.js'
+import { selfRepairSkill } from './skills/builtin/self-repair.js'
+import { githubSkill } from './skills/builtin/github.js'
+import { codeAnalysisSkill } from './skills/builtin/code-analysis.js'
+import { fileBatchSkill } from './skills/builtin/file-batch.js'
+import { scheduleSkill } from './skills/builtin/schedule.js'
+import { dataExtractSkill } from './skills/builtin/data-extract.js'
+import { CapabilityMap } from './agent/capability-map.js'
 import type { PromptConfig, LLMCallMetrics } from './types.js'
 
 export interface AgentConfig {
@@ -25,20 +41,47 @@ export interface AgentConfig {
 type EventCallback = (event: AgentEvent) => void
 
 const CONVERSATIONAL_SYSTEM_PROMPT = `You are Evolving Agent, an AI assistant that learns and improves over time.
-You can use tools to accomplish tasks: shell (run commands), file_read, file_write, http.
+
+You have access to the following tools and skills:
+
+Tools (low-level):
+- shell: Run shell commands
+- file_read: Read files
+- file_write: Write files
+- http: Make HTTP requests
+- browser: Control a headless browser (goto, click, type, text, screenshot, evaluate)
+
+Skills (high-level, use "skill:<id>" as the tool name):
+- skill:web-search(query, engine?, maxResults?) — Search the web and summarize results
+- skill:summarize-url(url, focus?) — Visit a URL and produce a structured summary
+- skill:self-repair(error, toolName) — Diagnose and fix tool failures
+- skill:github(action, repo?, query?, title?, body?) — Interact with GitHub (issues, PRs, repos)
+- skill:code-analysis(path, question?) — Analyze code structure and explain code
+- skill:file-batch(action, pattern, replacement?, path?) — Batch file operations
+- skill:schedule(action, interval?, command?, taskId?) — Schedule tasks at intervals
+- skill:data-extract(source, schema?, format?) — Extract structured data from URLs or files
+
 When a task requires action, break it into steps and execute them.
+Prefer using skills over raw tools when appropriate — skills handle multi-step workflows automatically.
 For simple questions or conversation, respond directly without tools.
+If a task is beyond your capabilities, say so honestly.
 Be concise and helpful.`
 
 export class Agent {
   private session: Session
   private tools: ToolRegistry
   private hooks: HookRunner
+  private hookSandbox: HookSandbox
+  private hookCompiler: HookCompiler
   private memory: MemoryManager
   private planner: Planner
   private executor: Executor
   private reflector: Reflector
   private llm: LLMProvider
+  private skills: SkillRegistry
+  private skillCompiler: SkillCompiler
+  private skillValidator: SkillValidator
+  private capabilityMap: CapabilityMap
   private listeners: EventCallback[] = []
 
   constructor(private config: AgentConfig) {
@@ -65,8 +108,24 @@ export class Agent {
     this.tools.register(fileReadTool)
     this.tools.register(fileWriteTool)
     this.tools.register(httpTool)
+    this.tools.register(browserTool)
 
-    // Initialize hooks with core hooks
+    // Initialize skill registry with built-in skills (8 total)
+    this.skills = new SkillRegistry(config.dataPath)
+    this.skills.register(webSearchSkill)
+    this.skills.register(summarizeUrlSkill)
+    this.skills.register(selfRepairSkill)
+    this.skills.register(githubSkill)
+    this.skills.register(codeAnalysisSkill)
+    this.skills.register(fileBatchSkill)
+    this.skills.register(scheduleSkill)
+    this.skills.register(dataExtractSkill)
+
+    // Skill auto-creation from reflection
+    this.skillCompiler = new SkillCompiler()
+    this.skillValidator = new SkillValidator(this.tools.list().map((t) => t.name))
+
+    // Initialize hooks with core hooks + sandbox for evolved hooks
     this.hooks = new HookRunner()
     this.hooks.registerAll([
       contextWindowGuard,
@@ -74,18 +133,46 @@ export class Agent {
       safetyCheck,
       metricsCollectorHook,
     ])
+    this.hookSandbox = new HookSandbox()
+    this.hooks.setSandbox(this.hookSandbox)
+    this.hookCompiler = new HookCompiler()
 
-    // Initialize memory
-    this.memory = new MemoryManager(config.dataPath)
+    // Initialize memory with embedder for RAG
+    const embedder = Embedder.fromProviderConfig(
+      this.llm.getProviderType(),
+      undefined, // apiKey from env
+    )
+    this.memory = new MemoryManager(config.dataPath, embedder)
 
-    // Initialize components
-    this.planner = new Planner(this.llm)
-    this.executor = new Executor(this.tools, this.hooks)
+    // Capability awareness
+    this.capabilityMap = new CapabilityMap()
+    this.capabilityMap.refresh(
+      this.tools.list(),
+      this.skills.list(),
+    )
+
+    // Initialize components — pass skill registry + capability map to planner
+    this.planner = new Planner(this.llm, this.skills, this.capabilityMap)
+    this.executor = new Executor(this.tools, this.hooks, this.skills, this.createSkillContext())
     this.reflector = new Reflector(this.llm)
   }
 
   async init(): Promise<void> {
     await this.memory.init()
+    await this.skills.init()
+
+    // Refresh capability map after skills are loaded from disk
+    this.capabilityMap.refresh(
+      this.tools.list(),
+      this.skills.list(),
+    )
+
+    // Graduate any sandboxed hooks that have proven themselves
+    const graduated = this.hooks.graduateSandboxedHooks()
+    if (graduated.length > 0) {
+      this.emit({ type: 'hook', data: `Graduated ${graduated.length} evolved hook(s)`, timestamp: new Date().toISOString() })
+    }
+
     this.emit({ type: 'hook', data: 'Agent initialized', timestamp: new Date().toISOString() })
   }
 
@@ -96,6 +183,33 @@ export class Agent {
   private emit(event: AgentEvent): void {
     for (const listener of this.listeners) {
       listener(event)
+    }
+  }
+
+  /** Create a SkillContext that skills use to interact with tools and LLM */
+  private createSkillContext(): SkillContext {
+    return {
+      useTool: async (toolName, params) => {
+        return this.tools.execute(toolName, params)
+      },
+      think: async (prompt) => {
+        const config: PromptConfig = {
+          systemPrompt: 'You are a helpful AI assistant. Respond concisely.',
+          skills: [],
+          knowledge: [],
+          history: [],
+          experiences: [],
+          currentInput: prompt,
+          provider: this.llm.getProviderType(),
+        }
+        const messages = this.llm.buildMessages(config)
+        const result = await this.llm.generate('executor', messages)
+        this.trackMetrics(result.metrics)
+        return result.text
+      },
+      emit: (message) => {
+        this.emit({ type: 'executing', data: message, timestamp: new Date().toISOString() })
+      },
     }
   }
 
@@ -169,7 +283,7 @@ export class Agent {
       return response
     }
 
-    // 5. Execute plan steps
+    // 5. Execute plan steps (executor now handles both tools and skills)
     this.emit({ type: 'executing', data: `Executing ${plan.steps.length} step(s)...`, timestamp: new Date().toISOString() })
 
     const executionSteps = await this.executor.execute(plan, this.getAgentContext())
@@ -182,6 +296,19 @@ export class Agent {
       })
     }
 
+    // 5b. Auto-repair: if a tool step failed, try self-repair skill
+    const failedToolStep = executionSteps.find((s) => !s.result.success && s.tool && !s.tool.startsWith('skill:'))
+    if (failedToolStep && failedToolStep.result.error) {
+      this.emit({ type: 'executing', data: 'Attempting auto-repair...', timestamp: new Date().toISOString() })
+      const repairResult = await this.skills.get('self-repair')?.execute(
+        { error: failedToolStep.result.error, toolName: failedToolStep.tool! },
+        this.createSkillContext(),
+      )
+      if (repairResult?.success) {
+        this.emit({ type: 'hook', data: `Auto-repair succeeded: ${repairResult.output.slice(0, 200)}`, timestamp: new Date().toISOString() })
+      }
+    }
+
     // 6. Generate final response based on execution results
     const response = await this.generateSummaryResponse(userMessage, executionSteps)
     this.memory.addMessage('assistant', response)
@@ -191,7 +318,7 @@ export class Agent {
     const overallResult = this.determineResult(executionSteps)
     this.emit({ type: 'reflecting', data: 'Reflecting on execution...', timestamp: new Date().toISOString() })
 
-    const { reflection, tags, metrics: reflectMetrics } = await this.reflector.reflect(
+    const { reflection, tags, suggestedHook, metrics: reflectMetrics } = await this.reflector.reflect(
       userMessage,
       executionSteps,
       overallResult,
@@ -213,6 +340,45 @@ export class Agent {
         data: `Experience stored (score: ${storeResult.score.toFixed(2)}, ${storeResult.decision})`,
         timestamp: new Date().toISOString(),
       })
+    }
+
+    // 9. Auto-create skill from reflection if suggested
+    if (reflection.suggestedSkill) {
+      try {
+        const compiled = this.skillCompiler.compile(reflection.suggestedSkill)
+        const validation = this.skillValidator.validate(compiled.skill, reflection.suggestedSkill)
+        if (validation.valid) {
+          // Check for duplicates
+          const existing = this.skills.get(compiled.skill.id)
+          if (!existing) {
+            this.skills.register(compiled.skill)
+            this.emit({
+              type: 'hook',
+              data: `Skill auto-created: ${compiled.skill.name} (${compiled.skill.id})`,
+              timestamp: new Date().toISOString(),
+            })
+            // Refresh capability map
+            this.capabilityMap.refresh(this.tools.list(), this.skills.list())
+          }
+        }
+      } catch {
+        // Skill creation failed — non-fatal, continue
+      }
+    }
+
+    // 10. Auto-create hook from reflection if suggested
+    if (suggestedHook) {
+      try {
+        const compiled = this.hookCompiler.compile(suggestedHook)
+        this.hooks.registerEvolved(compiled.hook)
+        this.emit({
+          type: 'hook',
+          data: `Hook evolved (sandbox): ${compiled.hook.name}`,
+          timestamp: new Date().toISOString(),
+        })
+      } catch {
+        // Hook creation failed — non-fatal, continue
+      }
     }
 
     return response
@@ -291,5 +457,40 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
 
   getExperiences() {
     return this.memory.experienceStore.getAll('all')
+  }
+
+  // === Introspection API (for web dashboard) ===
+
+  getHookRunner(): HookRunner {
+    return this.hooks
+  }
+
+  getMemoryManager(): MemoryManager {
+    return this.memory
+  }
+
+  getToolRegistry(): ToolRegistry {
+    return this.tools
+  }
+
+  getLLMProvider(): LLMProvider {
+    return this.llm
+  }
+
+  getSkillRegistry(): SkillRegistry {
+    return this.skills
+  }
+
+  getCapabilityMap(): CapabilityMap {
+    return this.capabilityMap
+  }
+
+  getHookSandbox(): HookSandbox {
+    return this.hookSandbox
+  }
+
+  /** Load historical messages into short-term memory (for session resume) */
+  loadHistory(messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp?: string }>): void {
+    this.memory.shortTerm.load(messages)
   }
 }

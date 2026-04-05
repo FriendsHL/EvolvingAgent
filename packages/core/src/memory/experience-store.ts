@@ -167,6 +167,22 @@ export class ExperienceStore {
     return { movedToStale, movedToArchive }
   }
 
+  // === Introspection API (for web dashboard) ===
+
+  async getArchive(): Promise<Experience[]> {
+    const pool = await this.loadPool(this.archivePath)
+    return [...pool.values()]
+  }
+
+  async getPoolStats(): Promise<{ active: number; stale: number; archive: number }> {
+    const archiveFiles = await readdir(this.archivePath).catch(() => [])
+    return {
+      active: this.active.size,
+      stale: this.stale.size,
+      archive: archiveFiles.filter((f) => f.endsWith('.json')).length,
+    }
+  }
+
   private computeHealthScore(exp: Experience): number {
     const now = Date.now()
     const lastRef = exp.health.lastReferenced

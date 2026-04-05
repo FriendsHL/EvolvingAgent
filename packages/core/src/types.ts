@@ -113,7 +113,7 @@ export interface RetrievalResult {
   matchSource: ('keyword' | 'semantic' | 'tag')[]
 }
 
-// === Skills (Phase 2 full, stub here) ===
+// === Skills ===
 
 export interface SkillStep {
   description: string
@@ -131,6 +131,52 @@ export interface Skill {
   lastUsed: string
   createdFrom: string
   version: number
+}
+
+/** Input/output schema for executable skills */
+export interface SkillParam {
+  name: string
+  description: string
+  type: 'string' | 'number' | 'boolean'
+  required?: boolean
+}
+
+/** An executable skill — can be a built-in (with handler) or a composed skill (with steps) */
+export interface ExecutableSkill {
+  id: string
+  name: string
+  description: string
+  category: 'builtin' | 'system' | 'learned'
+  /** When should the planner consider this skill (keyword matching) */
+  triggers: string[]
+  /** Input parameters the skill accepts */
+  inputs: SkillParam[]
+  /** Execute the skill — receives inputs + tool registry, returns result */
+  execute: (
+    params: Record<string, unknown>,
+    context: SkillContext,
+  ) => Promise<SkillResult>
+  /** Whether this skill is currently available */
+  available?: boolean
+  /** Why the skill is unavailable */
+  unavailableReason?: string
+}
+
+export interface SkillContext {
+  /** Execute a tool by name */
+  useTool: (toolName: string, params: Record<string, unknown>) => Promise<ToolResult>
+  /** Call the LLM for reasoning within the skill */
+  think: (prompt: string) => Promise<string>
+  /** Emit progress events */
+  emit: (message: string) => void
+}
+
+export interface SkillResult {
+  success: boolean
+  output: string
+  error?: string
+  /** Structured data the skill produces (for downstream use) */
+  data?: Record<string, unknown>
 }
 
 // === Hooks ===

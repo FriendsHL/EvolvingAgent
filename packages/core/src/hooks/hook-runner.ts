@@ -1,4 +1,5 @@
 import type { Hook, HookContext, HookTrigger } from '../types.js'
+import type { HookSandbox, SandboxedHook } from './hook-sandbox.js'
 import { safeExec } from './safety-shell.js'
 
 // Trigger → execution mode mapping
@@ -14,6 +15,45 @@ function byPriority(a: Hook, b: Hook): number {
 
 export class HookRunner {
   private hooks: Hook[] = []
+  private sandbox?: HookSandbox
+
+  /** Set the sandbox for evolved hooks */
+  setSandbox(sandbox: HookSandbox): void {
+    this.sandbox = sandbox
+  }
+
+  /** Register an evolved hook (goes to sandbox first if sandbox is set) */
+  registerEvolved(hook: Hook): void {
+    if (this.sandbox) {
+      this.sandbox.add(hook)
+    } else {
+      this.hooks.push(hook)
+    }
+  }
+
+  /** Graduate sandboxed hooks that have proven themselves */
+  graduateSandboxedHooks(): Hook[] {
+    if (!this.sandbox) return []
+    const graduated = this.sandbox.getGraduated()
+    for (const hook of graduated) {
+      hook.source = 'evolved-verified'
+      this.hooks.push(hook)
+      this.sandbox.remove(hook.id)
+    }
+    return graduated
+  }
+
+  /** Get all hooks including sandboxed */
+  getAllIncludingSandbox(): Array<Hook & { sandboxed?: boolean; sandboxStatus?: SandboxedHook }> {
+    const main = this.hooks.map((h) => ({ ...h, sandboxed: false as const }))
+    if (!this.sandbox) return main
+    const sandboxed = this.sandbox.list().map((entry) => ({
+      ...entry.hook,
+      sandboxed: true as const,
+      sandboxStatus: entry,
+    }))
+    return [...main, ...sandboxed]
+  }
 
   register(hook: Hook): void {
     this.hooks.push(hook)
@@ -67,22 +107,61 @@ export class HookRunner {
     return undefined
   }
 
+  // === Introspection API (for web dashboard) ===
+
+  getAll(): Hook[] {
+    return [...this.hooks]
+  }
+
+  getById(id: string): Hook | undefined {
+    return this.hooks.find((h) => h.id === id)
+  }
+
+  setEnabled(id: string, enabled: boolean): boolean {
+    const hook = this.hooks.find((h) => h.id === id)
+    if (!hook) return false
+    hook.enabled = enabled
+    return true
+  }
+
+  setPriority(id: string, priority: number): boolean {
+    const hook = this.hooks.find((h) => h.id === id)
+    if (!hook) return false
+    hook.priority = priority
+    return true
+  }
+
   /**
    * Auto-detect execution mode from trigger type and run.
    */
   async run<T>(trigger: HookTrigger, context: HookContext, data?: T): Promise<T | undefined> {
+    let result: T | undefined
+
     if (VOID_TRIGGERS.includes(trigger)) {
       await this.runVoid(trigger, context)
-      return data
+      result = data
+    } else if (CLAIMING_TRIGGERS.includes(trigger)) {
+      result = (await this.runClaiming(trigger, context)) as T | undefined
+    } else if (data !== undefined) {
+      // Default to modifying
+      result = await this.runModifying(trigger, context, data)
+    } else {
+      await this.runVoid(trigger, context)
+      result = undefined
     }
-    if (CLAIMING_TRIGGERS.includes(trigger)) {
-      return (await this.runClaiming(trigger, context)) as T | undefined
-    }
-    // Default to modifying
-    if (data !== undefined) {
-      return await this.runModifying(trigger, context, data)
-    }
-    await this.runVoid(trigger, context)
-    return undefined
+
+    // Run sandboxed hooks (fire-and-forget, errors swallowed)
+    await this.runSandboxed(trigger, context)
+
+    return result
+  }
+
+  /** Run sandboxed hooks for the given trigger — errors never propagate */
+  private async runSandboxed(trigger: HookTrigger, context: HookContext): Promise<void> {
+    if (!this.sandbox) return
+    const entries = this.sandbox.list().filter((e) => e.hook.trigger === trigger && e.hook.enabled)
+    await Promise.all(
+      entries.map((entry) => this.sandbox!.execute(entry.hook.id, context)),
+    )
   }
 }

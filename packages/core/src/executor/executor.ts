@@ -1,12 +1,15 @@
-import type { ExecutionStep, Plan, PlanStep, ToolResult } from '../types.js'
+import type { ExecutionStep, Plan, PlanStep, ToolResult, SkillContext } from '../types.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import type { HookRunner } from '../hooks/hook-runner.js'
 import type { HookContext } from '../types.js'
+import type { SkillRegistry } from '../skills/skill-registry.js'
 
 export class Executor {
   constructor(
     private tools: ToolRegistry,
     private hookRunner: HookRunner,
+    private skills?: SkillRegistry,
+    private skillContext?: SkillContext,
   ) {}
 
   async execute(
@@ -55,6 +58,11 @@ export class Executor {
       }
     }
 
+    // Check if this is a skill invocation (tool = "skill:<id>")
+    if (step.tool.startsWith('skill:')) {
+      return this.executeSkill(step, startTime)
+    }
+
     // Run before:tool-call hook (can block dangerous commands)
     const hookContext: HookContext = {
       trigger: 'before:tool-call',
@@ -90,6 +98,46 @@ export class Executor {
       ...step,
       result,
       duration: Date.now() - startTime,
+    }
+  }
+
+  private async executeSkill(step: PlanStep, startTime: number): Promise<ExecutionStep> {
+    const skillId = step.tool!.replace('skill:', '')
+    const skill = this.skills?.get(skillId)
+
+    if (!skill) {
+      return {
+        ...step,
+        result: { success: false, output: '', error: `Skill not found: ${skillId}` },
+        duration: Date.now() - startTime,
+      }
+    }
+
+    if (!this.skillContext) {
+      return {
+        ...step,
+        result: { success: false, output: '', error: 'Skill context not available' },
+        duration: Date.now() - startTime,
+      }
+    }
+
+    try {
+      const skillResult = await skill.execute(step.params ?? {}, this.skillContext)
+      return {
+        ...step,
+        result: {
+          success: skillResult.success,
+          output: skillResult.output,
+          error: skillResult.error,
+        },
+        duration: Date.now() - startTime,
+      }
+    } catch (err) {
+      return {
+        ...step,
+        result: { success: false, output: '', error: `Skill error: ${(err as Error).message}` },
+        duration: Date.now() - startTime,
+      }
     }
   }
 }

@@ -1,14 +1,61 @@
 import type { Experience, RetrievalQuery, RetrievalResult } from '../types.js'
 import type { ExperienceStore } from './experience-store.js'
+import type { VectorIndex } from './vector-index.js'
+import type { Embedder } from './embedder.js'
 
 const RRF_K = 60 // Reciprocal Rank Fusion constant
 
+// ============================================================
+// Retriever Configuration
+// ============================================================
+
+export interface RetrieverConfig {
+  weights?: {
+    keyword: number  // default 0.3
+    vector: number   // default 0.5
+    tag: number      // default 0.2
+  }
+  /** Enable vector search — defaults to true when embedder is available */
+  vectorEnabled?: boolean
+}
+
+const DEFAULT_WEIGHTS = { keyword: 0.3, vector: 0.5, tag: 0.2 }
+
 /**
- * Hybrid retriever using keyword search + tag matching + RRF fusion.
- * Phase 1: no semantic/embedding search — keyword + tag only.
+ * Hybrid retriever using keyword search + vector search + tag matching + weighted RRF fusion.
+ * Gracefully degrades: if no embedder/vector index, falls back to keyword + tag only.
  */
 export class MemoryRetriever {
-  constructor(private store: ExperienceStore) {}
+  private weights: { keyword: number; vector: number; tag: number }
+  private vectorEnabled: boolean
+
+  constructor(
+    private store: ExperienceStore,
+    private vectorIndex?: VectorIndex,
+    private embedder?: Embedder,
+    private config?: RetrieverConfig,
+  ) {
+    const hasVector = Boolean(vectorIndex && embedder)
+    this.vectorEnabled = config?.vectorEnabled ?? hasVector
+
+    if (this.vectorEnabled && hasVector) {
+      // Use configured weights or defaults
+      this.weights = config?.weights ?? { ...DEFAULT_WEIGHTS }
+    } else {
+      // No vector available: redistribute vector weight proportionally to keyword + tag
+      const base = config?.weights ?? { ...DEFAULT_WEIGHTS }
+      const kwTagSum = base.keyword + base.tag
+      if (kwTagSum > 0) {
+        this.weights = {
+          keyword: base.keyword / kwTagSum,
+          vector: 0,
+          tag: base.tag / kwTagSum,
+        }
+      } else {
+        this.weights = { keyword: 0.6, vector: 0, tag: 0.4 }
+      }
+    }
+  }
 
   async search(query: RetrievalQuery): Promise<RetrievalResult[]> {
     const topK = query.topK ?? 5
@@ -18,16 +65,34 @@ export class MemoryRetriever {
     const experiences = this.store.getAll(pool)
     if (experiences.length === 0) return []
 
-    // Keyword ranking
-    const keywordRanked = this.keywordSearch(query.text, experiences)
+    // Build ranked lists with weights
+    const rankedLists: Array<{ list: Array<[string, number]>; weight: number }> = []
 
-    // Tag ranking
+    // 1. Keyword ranking
+    const keywordRanked = this.keywordSearch(query.text, experiences)
+    if (keywordRanked.length > 0) {
+      rankedLists.push({ list: keywordRanked, weight: this.weights.keyword })
+    }
+
+    // 2. Vector ranking (if available)
+    let vectorRanked: Array<[string, number]> = []
+    if (this.vectorEnabled && this.embedder && this.vectorIndex) {
+      vectorRanked = await this.vectorSearch(query.text)
+      if (vectorRanked.length > 0) {
+        rankedLists.push({ list: vectorRanked, weight: this.weights.vector })
+      }
+    }
+
+    // 3. Tag ranking
     const tagRanked = query.tags?.length
       ? this.tagSearch(query.tags, experiences)
       : []
+    if (tagRanked.length > 0) {
+      rankedLists.push({ list: tagRanked, weight: this.weights.tag })
+    }
 
-    // RRF fusion
-    const fused = this.rrfFuse([keywordRanked, tagRanked])
+    // Weighted RRF fusion
+    const fused = this.rrfFuse(rankedLists)
 
     // Filter by min score and take top K
     const results: RetrievalResult[] = []
@@ -36,8 +101,9 @@ export class MemoryRetriever {
       const exp = experiences.find((e) => e.id === id)
       if (!exp) continue
 
-      const matchSource: ('keyword' | 'tag')[] = []
+      const matchSource: ('keyword' | 'semantic' | 'tag')[] = []
       if (keywordRanked.some((r) => r[0] === id)) matchSource.push('keyword')
+      if (vectorRanked.some((r) => r[0] === id)) matchSource.push('semantic')
       if (tagRanked.some((r) => r[0] === id)) matchSource.push('tag')
 
       results.push({
@@ -57,6 +123,27 @@ export class MemoryRetriever {
     }
 
     return results
+  }
+
+  // ============================================================
+  // Search Strategies
+  // ============================================================
+
+  /**
+   * Vector search: embed the query and search the vector index.
+   * Returns sorted list of [id, rank_position].
+   */
+  private async vectorSearch(text: string): Promise<Array<[string, number]>> {
+    if (!this.embedder || !this.vectorIndex || this.vectorIndex.size() === 0) {
+      return []
+    }
+
+    const queryEmbedding = await this.embedder.embed(text)
+    // Retrieve more candidates than we need; RRF fusion handles final ranking
+    const results = this.vectorIndex.search(queryEmbedding, 50)
+
+    // Convert to [id, rank_position] format
+    return results.map((r, i) => [r.id, i + 1])
   }
 
   /**
@@ -114,18 +201,24 @@ export class MemoryRetriever {
     return scored.map(([id], i) => [id, i + 1])
   }
 
+  // ============================================================
+  // Fusion
+  // ============================================================
+
   /**
-   * Reciprocal Rank Fusion: fuse multiple ranked lists.
-   * score = sum(1 / (k + rank_i)) for each list
+   * Weighted Reciprocal Rank Fusion: fuse multiple ranked lists with weights.
+   * score = sum(weight_i / (k + rank_i)) for each list
    */
-  private rrfFuse(rankedLists: Array<Array<[string, number]>>): Array<[string, number]> {
+  private rrfFuse(
+    rankedLists: Array<{ list: Array<[string, number]>; weight: number }>,
+  ): Array<[string, number]> {
     const scores = new Map<string, number>()
 
-    for (const list of rankedLists) {
-      if (list.length === 0) continue
+    for (const { list, weight } of rankedLists) {
+      if (list.length === 0 || weight === 0) continue
       for (const [id, rank] of list) {
         const current = scores.get(id) ?? 0
-        scores.set(id, current + 1 / (RRF_K + rank))
+        scores.set(id, current + weight / (RRF_K + rank))
       }
     }
 

@@ -1,4 +1,4 @@
-import { generateText, streamText, type CoreMessage, type ToolSet } from 'ai'
+import { generateText, streamText, type ModelMessage, type ToolSet } from 'ai'
 
 // generateText accepts LanguageModelV1 but providers may return V3.
 // Both work at runtime — store as the union type generateText expects.
@@ -52,6 +52,24 @@ export const PROVIDER_PRESETS = {
       planner: 'qwen-plus',
       executor: 'qwen-plus',
       reflector: 'qwen-turbo',
+    },
+  },
+  'bailian-coding': {
+    type: 'openai-compatible' as const,
+    baseURL: 'https://coding.dashscope.aliyuncs.com/v1',
+    models: {
+      planner: 'qwen3-coder-plus',
+      executor: 'qwen3-coder-plus',
+      reflector: 'glm-5',
+    },
+  },
+  'bailian-glm5': {
+    type: 'openai-compatible' as const,
+    baseURL: 'https://coding.dashscope.aliyuncs.com/v1',
+    models: {
+      planner: 'glm-5',
+      executor: 'glm-5',
+      reflector: 'glm-5',
     },
   },
   deepseek: {
@@ -108,21 +126,25 @@ export class LLMProvider {
   }
 
   private createModels(config: ProviderConfig): Record<ModelRole, AnyModel> {
-    // Cast needed: SDK providers return LanguageModelV3 but generateText accepts LanguageModelV1 | V3
     const createModel = (modelId: string): AnyModel => {
       switch (config.type) {
         case 'anthropic': {
           const provider = createAnthropic({ apiKey: config.apiKey })
-          return provider(modelId)        }
+          return provider(modelId)
+        }
         case 'openai': {
           const provider = createOpenAI({ apiKey: config.apiKey })
-          return provider(modelId)        }
+          // Use chat() for Chat Completions API (broader compatibility)
+          return provider.chat(modelId)
+        }
         case 'openai-compatible': {
           const provider = createOpenAI({
             apiKey: config.apiKey ?? process.env.DASHSCOPE_API_KEY,
             baseURL: config.baseURL,
           })
-          return provider(modelId)        }
+          // Must use chat() — compatible endpoints don't support Responses API
+          return provider.chat(modelId)
+        }
       }
     }
 
@@ -149,17 +171,17 @@ export class LLMProvider {
   // Prompt Builder: 4-Layer Cache Structure
   // ============================================================
 
-  buildMessages(config: PromptConfig): CoreMessage[] {
-    const messages: CoreMessage[] = []
+  buildMessages(config: PromptConfig): ModelMessage[] {
+    const messages: ModelMessage[] = []
     const useAnthropicCache = this.config.type === 'anthropic'
 
     // Layer 1: System prompt (most stable — cache breakpoint 1)
-    const systemMsg: CoreMessage = { role: 'system' as const, content: config.systemPrompt }
+    const systemMsg: ModelMessage = { role: 'system' as const, content: config.systemPrompt }
     messages.push(useAnthropicCache ? withAnthropicCache(systemMsg) : systemMsg)
 
     // Layer 2: Skills + Knowledge (fairly stable — cache breakpoint 2)
     if (config.skills.length > 0 || config.knowledge.length > 0) {
-      const skillMsg: CoreMessage = {
+      const skillMsg: ModelMessage = {
         role: 'user' as const,
         content: formatSkillsAndKnowledge(config.skills, config.knowledge),
       }
@@ -193,7 +215,7 @@ export class LLMProvider {
 
   async generate(
     role: ModelRole,
-    messages: CoreMessage[],
+    messages: ModelMessage[],
     tools?: ToolSet,
   ): Promise<GenerateResult> {
     const model = this.models[role]
@@ -203,15 +225,14 @@ export class LLMProvider {
       model,
       messages,
       tools,
-      maxSteps: 1,
     })
 
-    const cache = extractCacheMetrics(result.providerMetadata, this.config.type)
+    const usage = result.usage
     const tokens = {
-      prompt: result.usage?.promptTokens ?? 0,
-      completion: result.usage?.completionTokens ?? 0,
-      cacheWrite: cache.cacheWrite,
-      cacheRead: cache.cacheRead,
+      prompt: usage?.inputTokens ?? 0,
+      completion: usage?.outputTokens ?? 0,
+      cacheWrite: usage?.inputTokenDetails?.cacheWriteTokens ?? 0,
+      cacheRead: usage?.inputTokenDetails?.cacheReadTokens ?? 0,
     }
     const totalInput = tokens.prompt + tokens.cacheRead + tokens.cacheWrite
     const cacheHitRate = totalInput > 0 ? tokens.cacheRead / totalInput : 0
@@ -234,7 +255,7 @@ export class LLMProvider {
       toolCalls: result.toolCalls?.map((tc) => ({
         toolCallId: tc.toolCallId,
         toolName: tc.toolName,
-        args: tc.args as Record<string, unknown>,
+        args: tc.input as Record<string, unknown>,
       })) ?? [],
       metrics,
     }
@@ -242,7 +263,7 @@ export class LLMProvider {
 
   async *stream(
     role: ModelRole,
-    messages: CoreMessage[],
+    messages: ModelMessage[],
     tools?: ToolSet,
   ): AsyncGenerator<{ type: 'text-delta'; text: string } | { type: 'finish'; metrics: LLMCallMetrics }> {
     const model = this.models[role]
@@ -252,20 +273,18 @@ export class LLMProvider {
       model,
       messages,
       tools,
-      maxSteps: 1,
     })
 
     for await (const chunk of result.textStream) {
       yield { type: 'text-delta', text: chunk }
     }
 
-    const [usage, providerMeta] = await Promise.all([result.usage, result.providerMetadata])
-    const cache = extractCacheMetrics(providerMeta, this.config.type)
+    const usage = await result.usage
     const tokens = {
-      prompt: usage?.promptTokens ?? 0,
-      completion: usage?.completionTokens ?? 0,
-      cacheWrite: cache.cacheWrite,
-      cacheRead: cache.cacheRead,
+      prompt: usage?.inputTokens ?? 0,
+      completion: usage?.outputTokens ?? 0,
+      cacheWrite: usage?.inputTokenDetails?.cacheWriteTokens ?? 0,
+      cacheRead: usage?.inputTokenDetails?.cacheReadTokens ?? 0,
     }
     const totalInput = tokens.prompt + tokens.cacheRead + tokens.cacheWrite
     const cacheHitRate = totalInput > 0 ? tokens.cacheRead / totalInput : 0
@@ -298,7 +317,7 @@ export interface GenerateResult {
   metrics: LLMCallMetrics
 }
 
-function withAnthropicCache(message: CoreMessage): CoreMessage {
+function withAnthropicCache(message: ModelMessage): ModelMessage {
   return {
     ...message,
     providerOptions: {
@@ -336,26 +355,6 @@ export function buildToolSet(tools: ToolDefinition[]): Record<string, { descript
   return Object.fromEntries(
     sorted.map((t) => [t.name, { description: t.description, parameters: t.parameters }]),
   )
-}
-
-function extractCacheMetrics(
-  metadata: Record<string, unknown> | undefined,
-  providerType: ProviderType,
-): { cacheRead: number; cacheWrite: number } {
-  if (!metadata) return { cacheRead: 0, cacheWrite: 0 }
-  if (providerType === 'anthropic') {
-    const meta = metadata.anthropic as Record<string, number> | undefined
-    return {
-      cacheRead: meta?.cacheReadInputTokens ?? 0,
-      cacheWrite: meta?.cacheCreationInputTokens ?? 0,
-    }
-  }
-  // OpenAI / OpenAI-compatible: cache metrics from usage if available
-  const meta = metadata.openai as Record<string, number> | undefined
-  return {
-    cacheRead: meta?.cachedPromptTokens ?? 0,
-    cacheWrite: 0, // OpenAI auto-caches, no write metric
-  }
 }
 
 // === Cost Estimation ===
@@ -425,14 +424,14 @@ export function setDefaultProvider(provider: LLMProvider): void {
 }
 
 /** @deprecated Use LLMProvider instance methods. Kept for backward compat. */
-export function buildMessages(config: PromptConfig): CoreMessage[] {
+export function buildMessages(config: PromptConfig): ModelMessage[] {
   return getDefaultProvider().buildMessages(config)
 }
 
 /** @deprecated Use provider.generate(). Kept for backward compat. */
 export async function generateWithTools(
   role: ModelRole,
-  messages: CoreMessage[],
+  messages: ModelMessage[],
   tools?: ToolSet,
 ): Promise<GenerateResult> {
   return getDefaultProvider().generate(role, messages, tools)
@@ -441,7 +440,7 @@ export async function generateWithTools(
 /** @deprecated Use provider.stream(). Kept for backward compat. */
 export async function* streamWithTools(
   role: ModelRole,
-  messages: CoreMessage[],
+  messages: ModelMessage[],
   tools?: ToolSet,
 ): AsyncGenerator<{ type: 'text-delta'; text: string } | { type: 'finish'; metrics: LLMCallMetrics }> {
   yield* getDefaultProvider().stream(role, messages, tools)

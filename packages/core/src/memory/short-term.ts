@@ -28,6 +28,17 @@ export class ShortTermMemory {
     return [...this.messages]
   }
 
+  /** Load historical messages (e.g. when resuming a session) */
+  load(messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp?: string }>): void {
+    for (const msg of messages) {
+      this.messages.push({
+        role: msg.role,
+        content: msg.content,
+        timestamp: msg.timestamp ?? new Date().toISOString(),
+      })
+    }
+  }
+
   clear(): void {
     this.messages = []
   }

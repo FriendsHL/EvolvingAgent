@@ -43,6 +43,20 @@ export class MetricsCollector {
     }
   }
 
+  /** Read all metrics for a date range */
+  async getByDateRange(startDate: string, endDate: string): Promise<LLMCallMetrics[]> {
+    const files = await readdir(this.metricsDir).catch(() => [])
+    const allMetrics: LLMCallMetrics[] = []
+    for (const file of files) {
+      if (!file.endsWith('.jsonl')) continue
+      const date = file.replace('.jsonl', '')
+      if (date < startDate || date > endDate) continue
+      const metrics = await this.getByDate(date)
+      allMetrics.push(...metrics)
+    }
+    return allMetrics
+  }
+
   /** Aggregate metrics for a date range */
   async aggregate(startDate?: string, endDate?: string): Promise<{
     totalCalls: number
