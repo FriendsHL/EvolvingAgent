@@ -12,7 +12,7 @@ export class MemoryRetriever {
 
   async search(query: RetrievalQuery): Promise<RetrievalResult[]> {
     const topK = query.topK ?? 5
-    const minScore = query.minScore ?? 0.3
+    const minScore = query.minScore ?? 0.005
     const pool = query.pool ?? 'active'
 
     const experiences = this.store.getAll(pool)
