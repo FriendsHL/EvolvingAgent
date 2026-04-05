@@ -35,6 +35,8 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [statusText, setStatusText] = useState('')
+  const [streamingContent, setStreamingContent] = useState('')
   const [session, setSession] = useState<SessionInfo | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
   const [selectedProvider, setSelectedProvider] = useState('bailian-coding')
@@ -122,6 +124,10 @@ export default function ChatPage() {
       timestamp: new Date().toISOString(),
     }])
 
+    setStatusText('')
+    setStreamingContent('')
+    let streamingStarted = false
+
     try {
       const res = await fetch(`/api/chat/sessions/${session.sessionId}/message`, {
         method: 'POST',
@@ -147,12 +153,51 @@ export default function ChatPage() {
           if (!line.startsWith('data: ')) continue
           try {
             const event = JSON.parse(line.slice(6))
-            if (event.type === 'message') {
-              setMessages((prev) => [...prev, {
-                role: 'assistant',
-                content: event.content,
-                timestamp: new Date().toISOString(),
-              }])
+            if (event.type === 'status') {
+              setStatusText(event.content)
+            } else if (event.type === 'text-delta') {
+              // On first delta, add a new assistant message and clear status
+              if (!streamingStarted) {
+                streamingStarted = true
+                setStatusText('')
+                setMessages((prev) => [...prev, {
+                  role: 'assistant',
+                  content: '',
+                  timestamp: new Date().toISOString(),
+                }])
+              }
+              // Append the delta to the last assistant message
+              setStreamingContent((prev) => prev + event.content)
+              setMessages((prev) => {
+                const updated = [...prev]
+                const last = updated[updated.length - 1]
+                if (last && last.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, content: last.content + event.content }
+                }
+                return updated
+              })
+            } else if (event.type === 'tool-call') {
+              const step = event.step
+              const status = step.result?.success ? 'OK' : 'FAIL'
+              setStatusText(`Tool: ${step.tool ?? step.description} [${status}]`)
+            } else if (event.type === 'message') {
+              // Final complete message — replace streaming content with authoritative version
+              if (streamingStarted) {
+                setMessages((prev) => {
+                  const updated = [...prev]
+                  const last = updated[updated.length - 1]
+                  if (last && last.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, content: event.content }
+                  }
+                  return updated
+                })
+              } else {
+                setMessages((prev) => [...prev, {
+                  role: 'assistant',
+                  content: event.content,
+                  timestamp: new Date().toISOString(),
+                }])
+              }
             } else if (event.type === 'error') {
               setMessages((prev) => [...prev, {
                 role: 'system',
@@ -161,6 +206,9 @@ export default function ChatPage() {
               }])
             } else if (event.type === 'metrics') {
               setSession((s) => s ? { ...s, totalCost: event.totalCost, totalTokens: event.totalTokens } : s)
+            } else if (event.type === 'done') {
+              setStatusText('')
+              setStreamingContent('')
             }
           } catch { /* skip parse errors */ }
         }
@@ -173,6 +221,8 @@ export default function ChatPage() {
       }])
     }
 
+    setStatusText('')
+    setStreamingContent('')
     setSending(false)
   }
 
@@ -313,7 +363,14 @@ export default function ChatPage() {
             </div>
           </div>
         ))}
-        {sending && (
+        {sending && statusText && !streamingContent && (
+          <div className="flex justify-start">
+            <div className="bg-blue-50 text-blue-600 rounded-xl px-4 py-2 text-xs font-medium">
+              {statusText}
+            </div>
+          </div>
+        )}
+        {sending && !streamingContent && !statusText && (
           <div className="flex justify-start">
             <div className="bg-gray-100 text-gray-500 rounded-xl px-4 py-2.5 text-sm">
               <span className="inline-flex gap-1">

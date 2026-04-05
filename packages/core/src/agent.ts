@@ -31,6 +31,7 @@ import { fileBatchSkill } from './skills/builtin/file-batch.js'
 import { scheduleSkill } from './skills/builtin/schedule.js'
 import { dataExtractSkill } from './skills/builtin/data-extract.js'
 import { CapabilityMap } from './agent/capability-map.js'
+import type { AgentCoordinator } from './multi-agent/coordinator.js'
 import type { PromptConfig, LLMCallMetrics } from './types.js'
 
 export interface AgentConfig {
@@ -384,6 +385,250 @@ export class Agent {
     return response
   }
 
+  /**
+   * Streaming variant of processMessage — yields incremental events for real-time UI.
+   * The final response text is streamed token-by-token via text-delta events.
+   */
+  async *processMessageStream(userMessage: string): AsyncGenerator<
+    | { type: 'status'; message: string }
+    | { type: 'text-delta'; text: string }
+    | { type: 'tool-call'; step: ExecutionStep }
+    | { type: 'done'; response: string; metrics: { cost: number; tokens: number } }
+  > {
+    this.memory.addMessage('user', userMessage)
+    this.emit({ type: 'message', data: { role: 'user', content: userMessage }, timestamp: new Date().toISOString() })
+
+    // 1. Retrieve related experiences
+    yield { type: 'status', message: 'Retrieving experiences...' }
+    const retrieved = await this.memory.search({ text: userMessage, topK: 3 })
+    const relatedExperiences = retrieved
+      .filter((r) => r.type === 'experience')
+      .map((r) => r.content as import('./types.js').Experience)
+
+    if (relatedExperiences.length > 0) {
+      this.emit({
+        type: 'hook',
+        data: `Found ${relatedExperiences.length} related experience(s)`,
+        timestamp: new Date().toISOString(),
+      })
+    }
+
+    // 2. Run before:llm-call hooks
+    const hookContext: HookContext = {
+      trigger: 'before:llm-call',
+      data: { history: this.memory.getHistory() },
+      agent: this.getAgentContext(),
+    }
+    await this.hooks.run('before:llm-call', hookContext, { history: this.memory.getHistory() })
+
+    // 3. Plan
+    yield { type: 'status', message: 'Planning...' }
+    this.emit({ type: 'planning', data: 'Analyzing task...', timestamp: new Date().toISOString() })
+
+    const { plan, metrics: planMetrics } = await this.planner.plan(
+      userMessage,
+      relatedExperiences,
+      this.memory.getHistory(),
+    )
+    this.trackMetrics(planMetrics)
+    this.emit({ type: 'planning', data: plan, timestamp: new Date().toISOString() })
+
+    // 4. If no tool steps — conversational, stream the response
+    if (plan.steps.length === 0) {
+      const fullText = yield* this.streamConversationalResponse(userMessage)
+      this.memory.addMessage('assistant', fullText)
+      this.emit({ type: 'message', data: { role: 'assistant', content: fullText }, timestamp: new Date().toISOString() })
+      yield { type: 'done', response: fullText, metrics: { cost: this.session.totalCost, tokens: this.session.totalTokens } }
+      return
+    }
+
+    // 5. Execute plan steps
+    yield { type: 'status', message: `Executing ${plan.steps.length} step(s)...` }
+    this.emit({ type: 'executing', data: `Executing ${plan.steps.length} step(s)...`, timestamp: new Date().toISOString() })
+
+    const executionSteps = await this.executor.execute(plan, this.getAgentContext())
+
+    for (const step of executionSteps) {
+      yield { type: 'tool-call', step }
+      this.emit({
+        type: step.result.success ? 'tool-result' : 'error',
+        data: step,
+        timestamp: new Date().toISOString(),
+      })
+    }
+
+    // 5b. Auto-repair
+    const failedToolStep = executionSteps.find((s) => !s.result.success && s.tool && !s.tool.startsWith('skill:'))
+    if (failedToolStep && failedToolStep.result.error) {
+      yield { type: 'status', message: 'Attempting auto-repair...' }
+      this.emit({ type: 'executing', data: 'Attempting auto-repair...', timestamp: new Date().toISOString() })
+      const repairResult = await this.skills.get('self-repair')?.execute(
+        { error: failedToolStep.result.error, toolName: failedToolStep.tool! },
+        this.createSkillContext(),
+      )
+      if (repairResult?.success) {
+        this.emit({ type: 'hook', data: `Auto-repair succeeded: ${repairResult.output.slice(0, 200)}`, timestamp: new Date().toISOString() })
+      }
+    }
+
+    // 6. Generate summary response (streaming)
+    yield { type: 'status', message: 'Generating response...' }
+    const fullText = yield* this.streamSummaryResponse(userMessage, executionSteps)
+    this.memory.addMessage('assistant', fullText)
+    this.emit({ type: 'message', data: { role: 'assistant', content: fullText }, timestamp: new Date().toISOString() })
+
+    // 7. Reflect
+    const overallResult = this.determineResult(executionSteps)
+    yield { type: 'status', message: 'Reflecting...' }
+    this.emit({ type: 'reflecting', data: 'Reflecting on execution...', timestamp: new Date().toISOString() })
+
+    const { reflection, tags, suggestedHook, metrics: reflectMetrics } = await this.reflector.reflect(
+      userMessage,
+      executionSteps,
+      overallResult,
+    )
+    this.trackMetrics(reflectMetrics)
+
+    // 8. Store experience
+    const storeResult = await this.memory.storeExperience(
+      userMessage,
+      executionSteps,
+      overallResult,
+      reflection,
+      tags,
+    )
+    if (storeResult.stored) {
+      this.emit({
+        type: 'hook',
+        data: `Experience stored (score: ${storeResult.score.toFixed(2)}, ${storeResult.decision})`,
+        timestamp: new Date().toISOString(),
+      })
+    }
+
+    // 9. Auto-create skill
+    if (reflection.suggestedSkill) {
+      try {
+        const compiled = this.skillCompiler.compile(reflection.suggestedSkill)
+        const validation = this.skillValidator.validate(compiled.skill, reflection.suggestedSkill)
+        if (validation.valid) {
+          const existing = this.skills.get(compiled.skill.id)
+          if (!existing) {
+            this.skills.register(compiled.skill)
+            this.emit({
+              type: 'hook',
+              data: `Skill auto-created: ${compiled.skill.name} (${compiled.skill.id})`,
+              timestamp: new Date().toISOString(),
+            })
+            this.capabilityMap.refresh(this.tools.list(), this.skills.list())
+          }
+        }
+      } catch {
+        // Skill creation failed — non-fatal
+      }
+    }
+
+    // 10. Auto-create hook
+    if (suggestedHook) {
+      try {
+        const compiled = this.hookCompiler.compile(suggestedHook)
+        this.hooks.registerEvolved(compiled.hook)
+        this.emit({
+          type: 'hook',
+          data: `Hook evolved (sandbox): ${compiled.hook.name}`,
+          timestamp: new Date().toISOString(),
+        })
+      } catch {
+        // Hook creation failed — non-fatal
+      }
+    }
+
+    yield { type: 'done', response: fullText, metrics: { cost: this.session.totalCost, tokens: this.session.totalTokens } }
+  }
+
+  /**
+   * Stream a conversational response (no tool steps), yielding text-delta events.
+   * Returns the full accumulated text.
+   */
+  private async *streamConversationalResponse(userMessage: string): AsyncGenerator<
+    { type: 'text-delta'; text: string },
+    string
+  > {
+    const config: PromptConfig = {
+      systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
+      skills: [],
+      knowledge: [],
+      history: this.memory.getHistory().slice(0, -1),
+      experiences: [],
+      currentInput: userMessage,
+      provider: this.llm.getProviderType(),
+    }
+
+    const messages = this.llm.buildMessages(config)
+    let fullText = ''
+
+    for await (const chunk of this.llm.stream('executor', messages)) {
+      if (chunk.type === 'text-delta') {
+        fullText += chunk.text
+        yield { type: 'text-delta', text: chunk.text }
+      } else if (chunk.type === 'finish') {
+        this.trackMetrics(chunk.metrics)
+      }
+    }
+
+    return fullText
+  }
+
+  /**
+   * Stream a summary response after tool execution, yielding text-delta events.
+   * Returns the full accumulated text.
+   */
+  private async *streamSummaryResponse(
+    task: string,
+    steps: ExecutionStep[],
+  ): AsyncGenerator<{ type: 'text-delta'; text: string }, string> {
+    const stepsDescription = steps
+      .map((s, i) => {
+        const status = s.result.success ? 'OK' : 'FAIL'
+        const output = s.result.output ? s.result.output.slice(0, 500) : '(no output)'
+        const error = s.result.error ? `\nError: ${s.result.error}` : ''
+        return `Step ${i + 1} [${status}]: ${s.description}\nOutput: ${output}${error}`
+      })
+      .join('\n\n')
+
+    const summaryPrompt = `Based on the following execution results, provide a clear, concise summary to the user.
+
+Task: ${task}
+
+Results:
+${stepsDescription}
+
+Summarize what was accomplished and any important findings. Be direct and helpful.`
+
+    const config: PromptConfig = {
+      systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
+      skills: [],
+      knowledge: [],
+      history: this.memory.getHistory().slice(0, -1),
+      experiences: [],
+      currentInput: summaryPrompt,
+      provider: this.llm.getProviderType(),
+    }
+
+    const messages = this.llm.buildMessages(config)
+    let fullText = ''
+
+    for await (const chunk of this.llm.stream('executor', messages)) {
+      if (chunk.type === 'text-delta') {
+        fullText += chunk.text
+        yield { type: 'text-delta', text: chunk.text }
+      } else if (chunk.type === 'finish') {
+        this.trackMetrics(chunk.metrics)
+      }
+    }
+
+    return fullText
+  }
+
   private async generateConversationalResponse(userMessage: string): Promise<string> {
     const config: PromptConfig = {
       systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
@@ -492,5 +737,28 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
   /** Load historical messages into short-term memory (for session resume) */
   loadHistory(messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp?: string }>): void {
     this.memory.shortTerm.load(messages)
+  }
+
+  // === Multi-Agent Delegation ===
+
+  /** Get the agent's session ID (used as agent ID in coordination) */
+  getAgentId(): string {
+    return this.session.id
+  }
+
+  /** Delegate a subtask to another agent via the coordinator */
+  async delegate(
+    task: string,
+    coordinator: AgentCoordinator,
+  ): Promise<{ agentId: string; result: string } | null> {
+    const result = await coordinator.routeTask(task, this.session.id)
+    if (result) {
+      this.emit({
+        type: 'hook',
+        data: `Delegated to ${result.agentId}: ${task.slice(0, 100)}`,
+        timestamp: new Date().toISOString(),
+      })
+    }
+    return result
   }
 }

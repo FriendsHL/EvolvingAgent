@@ -11,6 +11,7 @@ import SessionsPage from './pages/SessionsPage.js'
 import SessionDetailPage from './pages/SessionDetailPage.js'
 import ChatPage from './pages/ChatPage.js'
 import ToolsPage from './pages/ToolsPage.js'
+import CoordinatePage from './pages/CoordinatePage.js'
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="/sessions/:id" element={<SessionDetailPage />} />
         <Route path="/skills" element={<SkillsPage />} />
         <Route path="/tools" element={<ToolsPage />} />
+        <Route path="/coordinate" element={<CoordinatePage />} />
         <Route path="/memory" element={<MemoryPage />} />
         <Route path="/memory/:id" element={<ExperienceDetailPage />} />
         <Route path="/hooks" element={<HooksPage />} />

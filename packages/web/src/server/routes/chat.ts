@@ -164,45 +164,49 @@ export function chatRoutes(
     // Record user message
     persisted.messages.push({ role: 'user', content: message, timestamp: new Date().toISOString() })
 
-    // Stream the response via SSE
+    // Stream the response via SSE using processMessageStream
     return streamSSE(c, async (stream) => {
-      // Send thinking event
-      await stream.writeSSE({ data: JSON.stringify({ type: 'thinking', content: 'Processing...' }) })
-
       try {
         const metricsBefore = agent.getMetrics().length
-        const response = await agent.processMessage(message)
 
-        // Persist new metrics to file-based collector
-        if (metricsCollector) {
-          const allMetrics = agent.getMetrics()
-          const newMetrics = allMetrics.slice(metricsBefore)
-          if (newMetrics.length > 0) {
-            await metricsCollector.recordAll(newMetrics)
+        for await (const event of agent.processMessageStream(message)) {
+          switch (event.type) {
+            case 'status':
+              await stream.writeSSE({ data: JSON.stringify({ type: 'status', content: event.message }) })
+              break
+            case 'text-delta':
+              await stream.writeSSE({ data: JSON.stringify({ type: 'text-delta', content: event.text }) })
+              break
+            case 'tool-call':
+              await stream.writeSSE({ data: JSON.stringify({ type: 'tool-call', step: event.step }) })
+              break
+            case 'done':
+              // Record assistant message and update session stats
+              persisted.messages.push({ role: 'assistant', content: event.response, timestamp: new Date().toISOString() })
+              persisted.totalCost = event.metrics.cost
+              persisted.totalTokens = event.metrics.tokens
+              await sessionStore.save(persisted)
+
+              // Persist new metrics to file-based collector
+              if (metricsCollector) {
+                const allMetrics = agent.getMetrics()
+                const newMetrics = allMetrics.slice(metricsBefore)
+                if (newMetrics.length > 0) {
+                  await metricsCollector.recordAll(newMetrics)
+                }
+              }
+
+              await stream.writeSSE({ data: JSON.stringify({ type: 'message', content: event.response }) })
+              await stream.writeSSE({
+                data: JSON.stringify({
+                  type: 'metrics',
+                  totalCost: event.metrics.cost,
+                  totalTokens: event.metrics.tokens,
+                }),
+              })
+              break
           }
         }
-
-        // Record assistant message
-        persisted.messages.push({ role: 'assistant', content: response, timestamp: new Date().toISOString() })
-
-        // Update session stats
-        const latest = agent.getSession()
-        persisted.totalCost = latest.totalCost
-        persisted.totalTokens = latest.totalTokens
-
-        await sessionStore.save(persisted)
-
-        // Send response
-        await stream.writeSSE({ data: JSON.stringify({ type: 'message', content: response }) })
-
-        // Send updated metrics
-        await stream.writeSSE({
-          data: JSON.stringify({
-            type: 'metrics',
-            totalCost: latest.totalCost,
-            totalTokens: latest.totalTokens,
-          }),
-        })
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         await stream.writeSSE({ data: JSON.stringify({ type: 'error', content: errMsg }) })

@@ -52,7 +52,7 @@ async function main() {
   app.route('/api/agents', agentsRoutes(agentRegistry))
   app.route('/api/sessions', sessionsRoutes(sessionStore))
   app.route('/api/tools', toolsRoutes())
-  app.route('/api/coordinate', coordinateRoutes())
+  app.route('/api/coordinate', coordinateRoutes(DATA_PATH))
 
   // SSE: Server-Sent Events for real-time agent events
   const sseClients = new Set<ReadableStreamDefaultController>()
