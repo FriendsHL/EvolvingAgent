@@ -5,8 +5,9 @@ import { MemoryRetriever } from './retriever.js'
 import type { RetrieverConfig } from './retriever.js'
 import { VectorIndex } from './vector-index.js'
 import type { Embedder } from './embedder.js'
-import { computeAdmission } from './admission.js'
+import { computeAdmission, applyFeedbackToScore } from './admission.js'
 import { nanoid } from 'nanoid'
+import type { SkillRegistry } from '../skills/skill-registry.js'
 
 export class MemoryManager {
   readonly shortTerm: ShortTermMemory
@@ -14,6 +15,15 @@ export class MemoryManager {
   readonly retriever: MemoryRetriever
   private vectorIndex?: VectorIndex
   private embedder?: Embedder
+  private skillRegistry?: SkillRegistry
+
+  /**
+   * Optionally wire a skill registry so that user feedback on experiences can
+   * also update the usage score of any skills referenced by those experiences.
+   */
+  setSkillRegistry(registry: SkillRegistry): void {
+    this.skillRegistry = registry
+  }
 
   constructor(dataPath: string, embedder?: Embedder, retrieverConfig?: RetrieverConfig) {
     this.shortTerm = new ShortTermMemory()
@@ -51,8 +61,18 @@ export class MemoryManager {
     this.shortTerm.add(role, content)
   }
 
-  /** Get conversation history for prompt building */
+  /**
+   * Get conversation history for prompt building.
+   * If a rolling summary has been set (by context-window-guard), it is
+   * prepended as a synthetic turn so the LLM still sees compressed
+   * earlier context after old raw turns are dropped.
+   */
   getHistory(): Array<{ role: 'user' | 'assistant'; content: string }> {
+    return this.shortTerm.getEffectiveHistory()
+  }
+
+  /** Raw (non-summarized) history — used when the summary itself must not leak in. */
+  getRawHistory(): Array<{ role: 'user' | 'assistant'; content: string }> {
     return this.shortTerm.getHistory()
   }
 
@@ -151,6 +171,48 @@ export class MemoryManager {
     }
 
     return { processed, errors }
+  }
+
+  /**
+   * Record explicit user feedback on a stored experience.
+   *
+   * Effects:
+   *  1. Sets the experience `feedback` field.
+   *  2. Recomputes its admission score (positive +0.3, negative -0.3, clamped [0,1]).
+   *  3. For any skills referenced by the experience's execution steps
+   *     (detected via `step.tool === 'skill:<id>'`), records a usage signal on
+   *     the skill registry so skill scores nudge in the same direction.
+   *  4. Persists the updated experience in whichever pool currently holds it
+   *     (active, stale, or archive) without moving it between pools.
+   *
+   * @returns `true` if the experience was found and updated, `false` otherwise.
+   */
+  async recordFeedback(
+    experienceId: string,
+    feedback: 'positive' | 'negative',
+  ): Promise<boolean> {
+    const exp = await this.experienceStore.getAnyPool(experienceId)
+    if (!exp) return false
+
+    const previousFeedback = exp.feedback
+    exp.feedback = feedback
+    exp.admissionScore = applyFeedbackToScore(exp.admissionScore, feedback, previousFeedback)
+
+    // Nudge skill scores for any skills that were used in this experience.
+    if (this.skillRegistry) {
+      const skillIds = new Set<string>()
+      for (const step of exp.steps) {
+        if (step.tool && step.tool.startsWith('skill:')) {
+          skillIds.add(step.tool.slice('skill:'.length))
+        }
+      }
+      for (const skillId of skillIds) {
+        this.skillRegistry.recordUsage(skillId, feedback === 'positive')
+      }
+    }
+
+    await this.experienceStore.updateInPlace(exp)
+    return true
   }
 
   /** Run periodic maintenance (pool transitions) */

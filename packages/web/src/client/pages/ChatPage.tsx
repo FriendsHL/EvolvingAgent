@@ -5,6 +5,10 @@ interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: string
+  /** For assistant messages: id of the stored experience this turn produced. */
+  experienceId?: string
+  /** Which feedback (if any) the user has submitted for this message. */
+  feedback?: 'positive' | 'negative'
 }
 
 interface Provider {
@@ -79,7 +83,7 @@ export default function ChatPage() {
 
   const resumeSession = async (sessionId: string) => {
     try {
-      const res = await apiPost<SessionInfo & { messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string }> }>(
+      const res = await apiPost<SessionInfo & { messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string; experienceId?: string }> }>(
         `/chat/sessions/${sessionId}/resume`,
         {},
       )
@@ -182,12 +186,17 @@ export default function ChatPage() {
               setStatusText(`Tool: ${step.tool ?? step.description} [${status}]`)
             } else if (event.type === 'message') {
               // Final complete message — replace streaming content with authoritative version
+              // and attach experienceId so feedback UI can render.
               if (streamingStarted) {
                 setMessages((prev) => {
                   const updated = [...prev]
                   const last = updated[updated.length - 1]
                   if (last && last.role === 'assistant') {
-                    updated[updated.length - 1] = { ...last, content: event.content }
+                    updated[updated.length - 1] = {
+                      ...last,
+                      content: event.content,
+                      experienceId: event.experienceId,
+                    }
                   }
                   return updated
                 })
@@ -196,6 +205,7 @@ export default function ChatPage() {
                   role: 'assistant',
                   content: event.content,
                   timestamp: new Date().toISOString(),
+                  experienceId: event.experienceId,
                 }])
               }
             } else if (event.type === 'error') {
@@ -224,6 +234,37 @@ export default function ChatPage() {
     setStatusText('')
     setStreamingContent('')
     setSending(false)
+  }
+
+  const submitFeedback = async (
+    messageIndex: number,
+    experienceId: string,
+    feedback: 'positive' | 'negative',
+  ) => {
+    // Optimistically mark the message so the buttons disable immediately.
+    setMessages((prev) => {
+      const updated = [...prev]
+      const target = updated[messageIndex]
+      if (target && target.role === 'assistant') {
+        updated[messageIndex] = { ...target, feedback }
+      }
+      return updated
+    })
+
+    try {
+      await apiPost(`/memory/experiences/${experienceId}/feedback`, { feedback })
+    } catch (err) {
+      // Roll back on failure
+      setMessages((prev) => {
+        const updated = [...prev]
+        const target = updated[messageIndex]
+        if (target && target.role === 'assistant') {
+          updated[messageIndex] = { ...target, feedback: undefined }
+        }
+        return updated
+      })
+      alert(`Failed to submit feedback: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -350,16 +391,55 @@ export default function ChatPage() {
       <div className="flex-1 overflow-y-auto bg-white rounded-xl border border-gray-200 p-4 space-y-3">
         {messages.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div
-              className={`max-w-[75%] rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
-                msg.role === 'user'
-                  ? 'bg-blue-600 text-white'
-                  : msg.role === 'system'
-                    ? 'bg-gray-100 text-gray-500 text-xs italic'
-                    : 'bg-gray-100 text-gray-800'
-              }`}
-            >
-              {msg.content}
+            <div className="max-w-[75%] flex flex-col items-start gap-1">
+              <div
+                className={`rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
+                  msg.role === 'user'
+                    ? 'bg-blue-600 text-white self-end'
+                    : msg.role === 'system'
+                      ? 'bg-gray-100 text-gray-500 text-xs italic'
+                      : 'bg-gray-100 text-gray-800'
+                }`}
+              >
+                {msg.content}
+              </div>
+              {msg.role === 'assistant' && msg.experienceId && (
+                <div className="flex items-center gap-1.5 pl-1">
+                  <button
+                    type="button"
+                    disabled={msg.feedback !== undefined}
+                    onClick={() => submitFeedback(i, msg.experienceId!, 'positive')}
+                    title="Helpful"
+                    className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                      msg.feedback === 'positive'
+                        ? 'bg-green-50 border-green-300 text-green-700'
+                        : msg.feedback === 'negative'
+                          ? 'opacity-30 border-gray-200 text-gray-400'
+                          : 'border-gray-200 text-gray-400 hover:border-green-300 hover:text-green-600'
+                    }`}
+                  >
+                    {'\u{1F44D}'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={msg.feedback !== undefined}
+                    onClick={() => submitFeedback(i, msg.experienceId!, 'negative')}
+                    title="Not helpful"
+                    className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                      msg.feedback === 'negative'
+                        ? 'bg-red-50 border-red-300 text-red-700'
+                        : msg.feedback === 'positive'
+                          ? 'opacity-30 border-gray-200 text-gray-400'
+                          : 'border-gray-200 text-gray-400 hover:border-red-300 hover:text-red-600'
+                    }`}
+                  >
+                    {'\u{1F44E}'}
+                  </button>
+                  {msg.feedback && (
+                    <span className="text-[10px] text-gray-400 ml-1">Thanks for the feedback</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         ))}

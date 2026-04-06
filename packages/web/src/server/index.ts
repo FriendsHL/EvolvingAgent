@@ -17,6 +17,7 @@ import { sessionsRoutes } from './routes/sessions.js'
 import { chatRoutes } from './routes/chat.js'
 import { toolsRoutes } from './routes/tools.js'
 import { coordinateRoutes } from './routes/coordinate.js'
+import { knowledgeRoutes } from './routes/knowledge.js'
 import { AgentRegistry } from './services/agent-registry.js'
 import { SessionStore } from './services/session-store.js'
 
@@ -53,6 +54,7 @@ async function main() {
   app.route('/api/sessions', sessionsRoutes(sessionStore))
   app.route('/api/tools', toolsRoutes())
   app.route('/api/coordinate', coordinateRoutes(DATA_PATH))
+  app.route('/api/knowledge', knowledgeRoutes(DATA_PATH))
 
   // SSE: Server-Sent Events for real-time agent events
   const sseClients = new Set<ReadableStreamDefaultController>()

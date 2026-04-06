@@ -1,5 +1,6 @@
 import type { Hook, HookContext, HookTrigger } from '../types.js'
 import type { HookSandbox, SandboxedHook } from './hook-sandbox.js'
+import { HookScheduler } from './hook-scheduler.js'
 import { safeExec } from './safety-shell.js'
 
 // Trigger → execution mode mapping
@@ -16,10 +17,30 @@ function byPriority(a: Hook, b: Hook): number {
 export class HookRunner {
   private hooks: Hook[] = []
   private sandbox?: HookSandbox
+  private scheduler?: HookScheduler
 
   /** Set the sandbox for evolved hooks */
   setSandbox(sandbox: HookSandbox): void {
     this.sandbox = sandbox
+  }
+
+  /** Start the cron scheduler (idempotent). Call after core hooks are registered. */
+  startScheduler(): HookScheduler {
+    if (!this.scheduler) {
+      this.scheduler = new HookScheduler(this)
+    }
+    this.scheduler.start()
+    return this.scheduler
+  }
+
+  /** Stop and discard the cron scheduler if running. */
+  stopScheduler(): void {
+    this.scheduler?.stop()
+  }
+
+  /** Access the scheduler (undefined if never started). */
+  getScheduler(): HookScheduler | undefined {
+    return this.scheduler
   }
 
   /** Register an evolved hook (goes to sandbox first if sandbox is set) */
@@ -57,10 +78,12 @@ export class HookRunner {
 
   register(hook: Hook): void {
     this.hooks.push(hook)
+    if (hook.trigger === 'cron') this.scheduler?.refresh()
   }
 
   registerAll(hooks: Hook[]): void {
     this.hooks.push(...hooks)
+    if (hooks.some((h) => h.trigger === 'cron')) this.scheduler?.refresh()
   }
 
   getEnabled(trigger: HookTrigger): Hook[] {
@@ -121,6 +144,7 @@ export class HookRunner {
     const hook = this.hooks.find((h) => h.id === id)
     if (!hook) return false
     hook.enabled = enabled
+    if (hook.trigger === 'cron') this.scheduler?.refresh()
     return true
   }
 

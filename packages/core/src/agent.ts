@@ -9,7 +9,8 @@ import { browserTool } from './tools/browser.js'
 import { HookRunner } from './hooks/hook-runner.js'
 import { HookCompiler } from './hooks/hook-compiler.js'
 import { HookSandbox } from './hooks/hook-sandbox.js'
-import { contextWindowGuard } from './hooks/core-hooks/context-window-guard.js'
+import { createContextWindowGuard } from './hooks/core-hooks/context-window-guard.js'
+import { ConversationSummarizer } from './memory/conversation-summarizer.js'
 import { costHardLimit } from './hooks/core-hooks/cost-hard-limit.js'
 import { safetyCheck } from './hooks/core-hooks/safety-check.js'
 import { metricsCollectorHook, getCollectedMetrics } from './hooks/core-hooks/metrics-collector.js'
@@ -31,6 +32,7 @@ import { fileBatchSkill } from './skills/builtin/file-batch.js'
 import { scheduleSkill } from './skills/builtin/schedule.js'
 import { dataExtractSkill } from './skills/builtin/data-extract.js'
 import { CapabilityMap } from './agent/capability-map.js'
+import { KnowledgeStore } from './knowledge/knowledge-store.js'
 import type { AgentCoordinator } from './multi-agent/coordinator.js'
 import type { PromptConfig, LLMCallMetrics } from './types.js'
 
@@ -83,6 +85,10 @@ export class Agent {
   private skillCompiler: SkillCompiler
   private skillValidator: SkillValidator
   private capabilityMap: CapabilityMap
+  private knowledgeStore: KnowledgeStore
+  private summarizer: ConversationSummarizer
+  /** Knowledge snippets retrieved for the in-flight message; reset per process call. */
+  private currentKnowledge: string[] = []
   private listeners: EventCallback[] = []
 
   constructor(private config: AgentConfig) {
@@ -126,10 +132,28 @@ export class Agent {
     this.skillCompiler = new SkillCompiler()
     this.skillValidator = new SkillValidator(this.tools.list().map((t) => t.name))
 
-    // Initialize hooks with core hooks + sandbox for evolved hooks
+    // Initialize memory with embedder for RAG (must come before hooks so
+    // the context-window-guard can reference ShortTermMemory directly).
+    const embedder = Embedder.fromProviderConfig(
+      this.llm.getProviderType(),
+      undefined, // apiKey from env
+    )
+    this.memory = new MemoryManager(config.dataPath, embedder)
+    // Wire the skill registry so experience feedback can influence skill scores.
+    this.memory.setSkillRegistry(this.skills)
+
+    // Conversation summarizer for long-context management (P8).
+    this.summarizer = new ConversationSummarizer(this.llm)
+
+    // Initialize hooks with core hooks + sandbox for evolved hooks.
+    // The context-window-guard gets a summarizer + memory ref so it can
+    // compress old turns instead of dropping them.
     this.hooks = new HookRunner()
     this.hooks.registerAll([
-      contextWindowGuard,
+      createContextWindowGuard({
+        summarizer: this.summarizer,
+        memory: this.memory.shortTerm,
+      }),
       costHardLimit,
       safetyCheck,
       metricsCollectorHook,
@@ -138,12 +162,8 @@ export class Agent {
     this.hooks.setSandbox(this.hookSandbox)
     this.hookCompiler = new HookCompiler()
 
-    // Initialize memory with embedder for RAG
-    const embedder = Embedder.fromProviderConfig(
-      this.llm.getProviderType(),
-      undefined, // apiKey from env
-    )
-    this.memory = new MemoryManager(config.dataPath, embedder)
+    // Knowledge base — user-curated documents/notes/facts
+    this.knowledgeStore = new KnowledgeStore(embedder)
 
     // Capability awareness
     this.capabilityMap = new CapabilityMap()
@@ -161,12 +181,16 @@ export class Agent {
   async init(): Promise<void> {
     await this.memory.init()
     await this.skills.init()
+    await this.knowledgeStore.init(this.config.dataPath)
 
     // Refresh capability map after skills are loaded from disk
     this.capabilityMap.refresh(
       this.tools.list(),
       this.skills.list(),
     )
+
+    // Start cron scheduler for time-based hooks (P7)
+    this.hooks.startScheduler()
 
     // Graduate any sandboxed hooks that have proven themselves
     const graduated = this.hooks.graduateSandboxedHooks()
@@ -175,6 +199,11 @@ export class Agent {
     }
 
     this.emit({ type: 'hook', data: 'Agent initialized', timestamp: new Date().toISOString() })
+  }
+
+  /** Shutdown agent background tasks (cron scheduler, etc.). */
+  async shutdown(): Promise<void> {
+    this.hooks.stopScheduler()
   }
 
   onEvent(callback: EventCallback): void {
@@ -241,6 +270,9 @@ export class Agent {
   async processMessage(userMessage: string): Promise<string> {
     this.memory.addMessage('user', userMessage)
     this.emit({ type: 'message', data: { role: 'user', content: userMessage }, timestamp: new Date().toISOString() })
+
+    // 0. Retrieve relevant knowledge snippets for this turn
+    this.currentKnowledge = await this.retrieveKnowledge(userMessage)
 
     // 1. Retrieve related experiences
     const retrieved = await this.memory.search({ text: userMessage, topK: 3 })
@@ -393,10 +425,18 @@ export class Agent {
     | { type: 'status'; message: string }
     | { type: 'text-delta'; text: string }
     | { type: 'tool-call'; step: ExecutionStep }
-    | { type: 'done'; response: string; metrics: { cost: number; tokens: number } }
+    | {
+        type: 'done'
+        response: string
+        metrics: { cost: number; tokens: number }
+        experienceId?: string
+      }
   > {
     this.memory.addMessage('user', userMessage)
     this.emit({ type: 'message', data: { role: 'user', content: userMessage }, timestamp: new Date().toISOString() })
+
+    // 0. Retrieve relevant knowledge snippets for this turn
+    this.currentKnowledge = await this.retrieveKnowledge(userMessage)
 
     // 1. Retrieve related experiences
     yield { type: 'status', message: 'Retrieving experiences...' }
@@ -542,7 +582,12 @@ export class Agent {
       }
     }
 
-    yield { type: 'done', response: fullText, metrics: { cost: this.session.totalCost, tokens: this.session.totalTokens } }
+    yield {
+      type: 'done',
+      response: fullText,
+      metrics: { cost: this.session.totalCost, tokens: this.session.totalTokens },
+      experienceId: storeResult.stored ? storeResult.experience?.id : undefined,
+    }
   }
 
   /**
@@ -556,7 +601,7 @@ export class Agent {
     const config: PromptConfig = {
       systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
       skills: [],
-      knowledge: [],
+      knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
       experiences: [],
       currentInput: userMessage,
@@ -607,7 +652,7 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     const config: PromptConfig = {
       systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
       skills: [],
-      knowledge: [],
+      knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
       experiences: [],
       currentInput: summaryPrompt,
@@ -633,7 +678,7 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     const config: PromptConfig = {
       systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
       skills: [],
-      knowledge: [],
+      knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
       experiences: [],
       currentInput: userMessage,
@@ -671,7 +716,7 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     const config: PromptConfig = {
       systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
       skills: [],
-      knowledge: [],
+      knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
       experiences: [],
       currentInput: summaryPrompt,
@@ -704,6 +749,18 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     return this.memory.experienceStore.getAll('all')
   }
 
+  /**
+   * Record explicit user feedback on an experience. Delegates to the memory
+   * manager, which updates the experience's admission score and also nudges
+   * any referenced skills' usage scores via the wired skill registry.
+   */
+  async recordFeedback(
+    experienceId: string,
+    feedback: 'positive' | 'negative',
+  ): Promise<boolean> {
+    return this.memory.recordFeedback(experienceId, feedback)
+  }
+
   // === Introspection API (for web dashboard) ===
 
   getHookRunner(): HookRunner {
@@ -728,6 +785,23 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
 
   getCapabilityMap(): CapabilityMap {
     return this.capabilityMap
+  }
+
+  getKnowledgeStore(): KnowledgeStore {
+    return this.knowledgeStore
+  }
+
+  /** Retrieve top-3 knowledge snippets matching the user message. */
+  private async retrieveKnowledge(userMessage: string): Promise<string[]> {
+    try {
+      if (!this.knowledgeStore.isInitialized() || this.knowledgeStore.size() === 0) {
+        return []
+      }
+      const results = await this.knowledgeStore.search(userMessage, 3)
+      return results.map((r) => r.entry.content)
+    } catch {
+      return []
+    }
   }
 
   getHookSandbox(): HookSandbox {

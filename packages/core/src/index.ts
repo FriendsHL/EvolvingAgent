@@ -31,6 +31,9 @@ export type { ScoredResult } from './memory/vector-index.js'
 export type { RetrieverConfig } from './memory/retriever.js'
 export { MetricsCollector } from './metrics/collector.js'
 
+export { KnowledgeStore } from './knowledge/knowledge-store.js'
+export type { KnowledgeEntry, KnowledgeSearchResult } from './knowledge/types.js'
+
 export { CapabilityMap } from './agent/capability-map.js'
 export type { Capability, FeasibilityResult } from './agent/capability-map.js'
 

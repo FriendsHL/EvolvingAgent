@@ -83,6 +83,7 @@ export function computeAdmission(
   reflection: Reflection,
   tags: string[],
   existingTasks: string[],
+  feedback?: 'positive' | 'negative',
 ): AdmissionResult {
   const scores: AdmissionScores = {
     novelty: scoreNovelty(task, existingTasks),
@@ -92,12 +93,19 @@ export function computeAdmission(
     complexity: scoreComplexity(steps),
   }
 
-  const score =
+  const baseScore =
     WEIGHTS.novelty * scores.novelty +
     WEIGHTS.lessonValue * scores.lessonValue +
     WEIGHTS.reusability * scores.reusability +
     WEIGHTS.userSignal * scores.userSignal +
     WEIGHTS.complexity * scores.complexity
+
+  // Apply explicit user feedback as a strong post-hoc signal.
+  // Positive feedback pushes the score up (+0.3), negative drags it down (-0.3).
+  // Clamped to [0, 1].
+  let score = baseScore
+  if (feedback === 'positive') score = Math.min(1, baseScore + 0.3)
+  else if (feedback === 'negative') score = Math.max(0, baseScore - 0.3)
 
   let decision: AdmissionResult['decision']
   if (score < 0.4) decision = 'discard'
@@ -105,4 +113,25 @@ export function computeAdmission(
   else decision = 'high-confidence'
 
   return { score, scores, decision }
+}
+
+/**
+ * Recompute admission score for an existing experience when feedback changes.
+ * We don't have access to original existingTasks (novelty baseline) here, so we
+ * preserve the base components by backing them out of the stored score.
+ * Strategy: apply the feedback delta directly to the stored score.
+ */
+export function applyFeedbackToScore(
+  baseScore: number,
+  feedback: 'positive' | 'negative' | undefined,
+  previousFeedback?: 'positive' | 'negative',
+): number {
+  // Undo previous feedback delta first
+  let score = baseScore
+  if (previousFeedback === 'positive') score -= 0.3
+  else if (previousFeedback === 'negative') score += 0.3
+  // Apply new feedback delta
+  if (feedback === 'positive') score += 0.3
+  else if (feedback === 'negative') score -= 0.3
+  return Math.max(0, Math.min(1, score))
 }

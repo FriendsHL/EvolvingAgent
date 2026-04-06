@@ -4,7 +4,13 @@ import type { Session, AgentEvent } from '@evolving-agent/core'
 
 export interface PersistedSession extends Session {
   agentId?: string
-  messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string }>
+  messages: Array<{
+    role: 'user' | 'assistant'
+    content: string
+    timestamp: string
+    /** For assistant messages: id of the experience stored from this turn, if any. */
+    experienceId?: string
+  }>
   events: AgentEvent[]
   closedAt?: string
 }

@@ -83,6 +83,63 @@ export class ExperienceStore {
     return this.active.get(id) ?? this.stale.get(id)
   }
 
+  /**
+   * Locate which pool currently holds an experience id.
+   * Checks in-memory active/stale first, then falls back to the on-disk archive.
+   */
+  async findPool(id: string): Promise<'active' | 'stale' | 'archive' | null> {
+    if (this.active.has(id)) return 'active'
+    if (this.stale.has(id)) return 'stale'
+    try {
+      const files = await readdir(this.archivePath)
+      if (files.includes(`${id}.json`)) return 'archive'
+    } catch {
+      /* archive dir missing */
+    }
+    return null
+  }
+
+  /**
+   * Update an experience in place in whichever pool currently holds it.
+   * Unlike save(), this does NOT move the experience back to the active pool,
+   * and does NOT trigger cap-based eviction. Used for lightweight mutations
+   * like recording user feedback.
+   */
+  async updateInPlace(experience: Experience): Promise<boolean> {
+    const pool = await this.findPool(experience.id)
+    if (!pool) return false
+
+    let dir: string
+    if (pool === 'active') {
+      this.active.set(experience.id, experience)
+      dir = this.activePath
+    } else if (pool === 'stale') {
+      this.stale.set(experience.id, experience)
+      dir = this.stalePath
+    } else {
+      dir = this.archivePath
+    }
+
+    await writeFile(
+      join(dir, `${experience.id}.json`),
+      JSON.stringify(experience, null, 2),
+      'utf-8',
+    )
+    return true
+  }
+
+  /** Fetch an experience by id, looking in active, stale, and archive pools. */
+  async getAnyPool(id: string): Promise<Experience | undefined> {
+    const hot = this.get(id)
+    if (hot) return hot
+    try {
+      const data = await readFile(join(this.archivePath, `${id}.json`), 'utf-8')
+      return JSON.parse(data) as Experience
+    } catch {
+      return undefined
+    }
+  }
+
   getAll(pool: 'active' | 'stale' | 'all' = 'active'): Experience[] {
     if (pool === 'active') return [...this.active.values()]
     if (pool === 'stale') return [...this.stale.values()]

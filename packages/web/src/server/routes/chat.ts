@@ -181,8 +181,14 @@ export function chatRoutes(
               await stream.writeSSE({ data: JSON.stringify({ type: 'tool-call', step: event.step }) })
               break
             case 'done':
-              // Record assistant message and update session stats
-              persisted.messages.push({ role: 'assistant', content: event.response, timestamp: new Date().toISOString() })
+              // Record assistant message and update session stats.
+              // Attach experienceId so the client can surface feedback UI.
+              persisted.messages.push({
+                role: 'assistant',
+                content: event.response,
+                timestamp: new Date().toISOString(),
+                experienceId: event.experienceId,
+              })
               persisted.totalCost = event.metrics.cost
               persisted.totalTokens = event.metrics.tokens
               await sessionStore.save(persisted)
@@ -196,7 +202,13 @@ export function chatRoutes(
                 }
               }
 
-              await stream.writeSSE({ data: JSON.stringify({ type: 'message', content: event.response }) })
+              await stream.writeSSE({
+                data: JSON.stringify({
+                  type: 'message',
+                  content: event.response,
+                  experienceId: event.experienceId,
+                }),
+              })
               await stream.writeSSE({
                 data: JSON.stringify({
                   type: 'metrics',

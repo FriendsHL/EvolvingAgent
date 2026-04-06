@@ -93,6 +93,8 @@ export interface Experience {
   embedding?: number[]
   health: ExperienceHealth
   admissionScore: number
+  /** Explicit user signal on this experience. Strongly influences admission score. */
+  feedback?: 'positive' | 'negative'
 }
 
 // === Memory: Retrieval ===
