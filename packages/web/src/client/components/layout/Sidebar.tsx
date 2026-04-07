@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { path: '/sessions', label: 'Sessions', icon: '🕐' },
   { path: '/skills', label: 'Skills', icon: '⚡' },
   { path: '/tools', label: 'Tools', icon: '🔧' },
+  { path: '/mcp', label: 'MCP', icon: '🔌' },
   { path: '/coordinate', label: 'Coordinate', icon: '🔄' },
   { path: '/knowledge', label: 'Knowledge', icon: '📚' },
   { path: '/memory', label: 'Memory', icon: '🧠' },

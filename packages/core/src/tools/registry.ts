@@ -7,12 +7,31 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool)
   }
 
+  /** Remove a tool by name. Returns true if it existed. */
+  unregister(name: string): boolean {
+    return this.tools.delete(name)
+  }
+
   get(name: string): Tool | undefined {
     return this.tools.get(name)
   }
 
   list(): Tool[] {
     return [...this.tools.values()]
+  }
+
+  /**
+   * Build a NEW registry containing only the tools matching `filter`.
+   * The returned registry is a snapshot — later mutations to the parent
+   * (register/unregister) do NOT propagate. Tool instances themselves are
+   * shared by reference, so execute() still routes through the same handler.
+   */
+  derive(filter: (tool: Tool) => boolean): ToolRegistry {
+    const child = new ToolRegistry()
+    for (const tool of this.tools.values()) {
+      if (filter(tool)) child.register(tool)
+    }
+    return child
   }
 
   async execute(name: string, params: Record<string, unknown>): Promise<ToolResult> {

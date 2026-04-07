@@ -17,6 +17,7 @@
 import { nanoid } from 'nanoid'
 import type { AgentConfig } from '../agent.js'
 import type { PresetName, ProviderConfig } from '../llm/provider.js'
+import type { ToolRegistry } from '../tools/registry.js'
 import {
   createInProcessTransportPair,
   type InProcessTransport,
@@ -122,6 +123,14 @@ export interface SubAgentManagerOptions {
     model?: string
     tokenBudget?: number
   } | undefined
+  /**
+   * Optional shared tool registry. When provided, every spawn() derives a
+   * filtered child registry from this (scope !== 'main', plus optional
+   * per-spawn toolWhitelist) and hands it to the inner Agent. Without this
+   * the spawned Agent falls back to constructing its own private registry
+   * with the built-in tools — legacy behavior.
+   */
+  sharedTools?: ToolRegistry
 }
 
 // ------------------------------------------------------------
@@ -178,9 +187,24 @@ export class SubAgentManager {
     // Build the agent config — every sub-agent shares the same dataPath,
     // which is how "shared experience/skill/knowledge stores" is realized
     // in v1: they all read the same files.
+    //
+    // Tool scoping: when sharedTools is provided, derive a filtered child
+    // registry containing only tools whose scope is not 'main' AND (if a
+    // toolWhitelist is set) whose name appears in the whitelist. The
+    // resulting registry is passed via shared.tools so the inner Agent
+    // skips its own built-in tool construction and uses ours instead.
     const agentConfig: AgentConfig = {
       dataPath: this.options.dataPath,
       provider: this.options.provider,
+    }
+    if (this.options.sharedTools) {
+      const whitelist = tools && tools.length > 0 ? new Set(tools) : null
+      const derived = this.options.sharedTools.derive((t) => {
+        if (t.scope === 'main') return false
+        if (whitelist && !whitelist.has(t.name)) return false
+        return true
+      })
+      agentConfig.shared = { tools: derived }
     }
 
     const { mainSide, subSide } = createInProcessTransportPair()

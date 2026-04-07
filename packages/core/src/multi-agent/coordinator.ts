@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { PresetName, ProviderConfig } from '../llm/provider.js'
+import type { ToolRegistry } from '../tools/registry.js'
 import { SubAgentManager, type SubAgentHandle, type SubAgentSpec } from '../sub-agent/index.js'
 import type { TaskProgress, TaskResult } from '../sub-agent/index.js'
 import { MessageBus } from './message-bus.js'
@@ -62,6 +63,8 @@ export interface CoordinatorOptions {
   defaultTokenBudget?: number
   /** Optional default soft timeout (ms). 0 means none. */
   defaultTimeout?: number
+  /** Optional shared tool registry forwarded to SubAgentManager. */
+  sharedTools?: ToolRegistry
 }
 
 export class AgentCoordinator {
@@ -91,6 +94,7 @@ export class AgentCoordinator {
         defaultTokenBudget: this.options.defaultTokenBudget ?? Number.POSITIVE_INFINITY,
         defaultTimeout: this.options.defaultTimeout ?? 0,
         resolveTemplate: (templateId) => this.resolveTemplateById(templateId),
+        sharedTools: this.options.sharedTools,
       })
     }
   }

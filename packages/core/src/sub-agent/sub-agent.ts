@@ -37,7 +37,12 @@ export interface SubAgentOptions {
    *  class hard-codes its conversational system prompt; we record the
    *  override here so future iterations can wire it in. */
   systemPromptOverride?: string
-  /** Optional tool whitelist (currently informational — see TODO). */
+  /**
+   * Optional tool whitelist. Enforced upstream by `SubAgentManager.spawn()`,
+   * which derives a filtered ToolRegistry from `sharedTools` and hands it
+   * to the inner Agent via `agentConfig.shared.tools`. The field is kept
+   * here for traceability and for callers that want to inspect the spec.
+   */
   toolWhitelist?: string[]
   /** Sub side of the IPC transport pair. */
   transport: SubAgentTransport
@@ -292,11 +297,6 @@ function composeSubAgentInput(assign: TaskAssign, systemPromptOverride?: string)
 // stream we can subscribe to from the wrapper. The Agent already emits
 // AgentEvents via `onEvent()`; the next iteration should bridge those
 // events into TaskProgress messages — see Agent.onEvent in agent.ts.
-//
-// TODO(tools): the `toolWhitelist` field is recorded but not yet enforced.
-// Enforcement requires either filtering the tool registry per-sub-agent
-// or adding a permission hook. The Agent currently always exposes its
-// full builtin tool/skill set.
 //
 // TODO(artifacts/toolCalls): the v1 result.artifacts and result.toolCalls
 // arrays are empty. We can populate them by subscribing to Agent's

@@ -26,6 +26,12 @@ export interface ToolDefinition {
   name: string
   description: string
   parameters: Record<string, unknown>
+  /**
+   * Which agent tier this tool is exposed to. Defaults to `'both'` when
+   * omitted. Sub-agent spawns derive a filtered registry using this field
+   * (plus an optional per-spawn `toolWhitelist`).
+   */
+  scope?: 'main' | 'sub' | 'both'
 }
 
 export interface ToolResult {

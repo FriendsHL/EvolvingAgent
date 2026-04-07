@@ -145,6 +145,18 @@ export type {
   SystemNoticeEvent,
 } from './channels/index.js'
 
+// MCP integration (Phase 4 / B stage)
+export { MCPManager } from './mcp/manager.js'
+export { MCPClient } from './mcp/client.js'
+export type {
+  MCPServerConfig,
+  MCPConfigFile,
+  MCPServerStatus,
+  MCPServerStatusEntry,
+  MCPToolDescriptor,
+} from './mcp/types.js'
+export { loadSecrets, expandPlaceholders, findMissingPlaceholders } from './secrets/loader.js'
+
 // Eval framework (Phase 3 Batch 5)
 export { EvalRunner, loadEvalCases, evaluateCriterion } from './eval/index.js'
 export type {

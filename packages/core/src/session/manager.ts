@@ -20,6 +20,7 @@ import {
 } from '../hooks/core-hooks/cache-health-alert.js'
 import { ChannelRegistry } from '../channels/index.js'
 import type { CacheHealthAlertEvent } from '../channels/index.js'
+import { MCPManager } from '../mcp/manager.js'
 import { shellTool } from '../tools/shell.js'
 import { fileReadTool } from '../tools/file-read.js'
 import { fileWriteTool } from '../tools/file-write.js'
@@ -60,6 +61,13 @@ export interface SessionManagerDeps {
    * Omit to use defaults; pass `{ enabled: false }` to disable entirely.
    */
   cacheHealthAlert?: CacheHealthAlertOptions & { enabled?: boolean }
+  /**
+   * MCP integration. By default the manager will look for
+   * `<dataPath>/config/mcp.json` and load whatever it finds — if the file
+   * is missing this is a quiet no-op. Pass `{ enabled: false }` to skip
+   * MCP loading entirely (useful for tests or air-gapped environments).
+   */
+  mcp?: { enabled?: boolean }
 }
 
 const DEFAULT_TITLE = (createdAt: number): string =>
@@ -100,6 +108,11 @@ export class SessionManager {
   // Constructed during `init()`; no concrete channels ship in Phase 3 —
   // Phase 4 will register Feishu/Slack/web implementations here.
   private channels!: ChannelRegistry
+
+  // MCP integration (Phase 4 / B stage). Optional — null when disabled or
+  // when no `mcp.json` exists. Owns the lifecycle of every MCP child
+  // process and registers `mcp:<server>:<tool>` entries on `this.tools`.
+  private mcpManager: MCPManager | null = null
 
   constructor(deps: SessionManagerDeps) {
     this.deps = deps
@@ -250,10 +263,47 @@ export class SessionManager {
     }
     this.systemScheduler.start()
 
+    // MCP integration. Bring up after the shared ToolRegistry exists so
+    // mcp:* tools land alongside builtins. Failures are non-blocking by
+    // design (see MCPManager.init contract); we still log them upstream.
+    if (this.deps.mcp?.enabled !== false) {
+      this.mcpManager = new MCPManager({
+        dataPath: this.deps.dataPath,
+        tools: this.tools,
+      })
+      try {
+        await this.mcpManager.init()
+      } catch (err) {
+        // MCPManager.init() is supposed to be quiet, but we belt-and-suspenders
+        // here so a future bug can never block session startup.
+        console.warn('[session-manager] MCPManager init failed:', err)
+      }
+    }
+
     // Load persisted session index from disk.
     await this.loadIndex()
 
     this.initialized = true
+  }
+
+  /** Access the live MCPManager (null when disabled or not yet initialized). */
+  getMCPManager(): MCPManager | null {
+    return this.mcpManager
+  }
+
+  /**
+   * Reload MCP servers from a fresh list (typically the just-saved
+   * `mcp.json`). The web config endpoint calls this after persisting
+   * user edits so changes apply without a restart.
+   *
+   * No-op when MCP is disabled (returns false).
+   */
+  async reloadMCPServers(
+    servers: import('../mcp/types.js').MCPServerConfig[],
+  ): Promise<boolean> {
+    if (!this.mcpManager) return false
+    await this.mcpManager.reload(servers)
+    return true
   }
 
   /** Read the system-level hook runner (system cron hooks live here). */
@@ -434,6 +484,12 @@ export class SessionManager {
       }
     }
     this.sessions.clear()
+    try {
+      await this.mcpManager?.shutdown()
+    } catch {
+      // Best-effort — child processes will be reaped on parent exit anyway.
+    }
+    this.mcpManager = null
     try {
       await this.budgetManager?.shutdown()
     } catch {
