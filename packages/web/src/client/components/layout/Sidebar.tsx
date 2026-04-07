@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom'
 
 const NAV_ITEMS = [
   { path: '/chat', label: 'Chat', icon: '💬' },
+  { path: '/events', label: 'Events', icon: '📡' },
   { path: '/dashboard', label: 'Dashboard', icon: '📊' },
   { path: '/agents', label: 'Agents', icon: '🤖' },
   { path: '/sessions', label: 'Sessions', icon: '🕐' },
