@@ -169,6 +169,24 @@ export { PLANNER_SYSTEM_PROMPT } from './planner/planner.js'
 export { REFLECTOR_SYSTEM_PROMPT } from './reflector/reflector.js'
 export { CONVERSATIONAL_SYSTEM_PROMPT } from './agent.js'
 
+// Experience self-distillation (Phase 4 / E stage)
+export {
+  ExperienceDistiller,
+  createLLMDistiller,
+  parseProposals,
+  LESSON_TAG,
+  DEFAULT_DISTILLER_OPTIONS,
+} from './experience-distill/index.js'
+export type {
+  ExperienceDistillerDeps,
+  ProposeLLMDistillerOptions,
+  DistillCandidate,
+  DistillFn,
+  DistillProposal,
+  DistillRun,
+  DistillerOptions,
+} from './experience-distill/index.js'
+
 // MCP integration (Phase 4 / B stage)
 export { MCPManager } from './mcp/manager.js'
 export { MCPClient } from './mcp/client.js'

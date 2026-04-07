@@ -26,6 +26,13 @@ import { createLLMProposer } from '../prompts/propose-llm.js'
 import { createEvalAdapter } from '../prompts/eval-adapter.js'
 import type { OptimizationRun, PromptId } from '../prompts/types.js'
 import { loadEvalCases } from '../eval/loader.js'
+import { ExperienceDistiller } from '../experience-distill/distiller.js'
+import { createLLMDistiller } from '../experience-distill/propose-llm.js'
+import type {
+  DistillCandidate,
+  DistillRun,
+  DistillerOptions,
+} from '../experience-distill/types.js'
 import { PLANNER_SYSTEM_PROMPT } from '../planner/planner.js'
 import { REFLECTOR_SYSTEM_PROMPT } from '../reflector/reflector.js'
 import { CONVERSATIONAL_SYSTEM_PROMPT } from '../agent.js'
@@ -110,6 +117,11 @@ export class SessionManager {
   // In-memory registry of optimization runs. Stage 2 keeps only the last
   // ~16 runs in memory; Stage 3 may persist them to disk.
   private optimizationRuns = new Map<string, OptimizationRun>()
+
+  // Experience distillation (Phase 4 E). Lazy: most sessions never call it.
+  // Keep last 32 runs in-memory; UI accept/reject mutates the same record.
+  private experienceDistiller: ExperienceDistiller | null = null
+  private distillRuns = new Map<string, DistillRun>()
 
   // System-level hook runner + cron scheduler. Hosts process-wide cron hooks
   // (cache-health-alert today; budget daily reset / experience archival in
@@ -450,6 +462,81 @@ export class SessionManager {
     while (sorted.length > MAX_RUNS) {
       const [oldId] = sorted.shift()!
       this.optimizationRuns.delete(oldId)
+    }
+  }
+
+  // ============================================================
+  // Experience distillation (Phase 4 E)
+  // ============================================================
+
+  /** Lazily build the distiller. Same provider as the rest of the manager. */
+  getExperienceDistiller(): ExperienceDistiller {
+    if (!this.experienceDistiller) {
+      this.experienceDistiller = new ExperienceDistiller({
+        store: this.experienceStore,
+        embedder: this.embedder,
+        distill: createLLMDistiller({ llm: this.llm }),
+      })
+    }
+    return this.experienceDistiller
+  }
+
+  /** Run distillation synchronously. Returns the completed run record. */
+  async startDistillRun(options: DistillerOptions = {}): Promise<DistillRun> {
+    const distiller = this.getExperienceDistiller()
+    const run = await distiller.run(options)
+    this.distillRuns.set(run.id, run)
+    this.evictOldDistillRuns()
+    return run
+  }
+
+  getDistillRun(runId: string): DistillRun | undefined {
+    return this.distillRuns.get(runId)
+  }
+
+  listDistillRuns(): DistillRun[] {
+    return [...this.distillRuns.values()].sort((a, b) =>
+      b.startedAt.localeCompare(a.startedAt),
+    )
+  }
+
+  /**
+   * Materialize a pending candidate into a real Experience and mark the
+   * candidate accepted. Returns the new Experience id, or null if the
+   * candidate is unknown / already finalized.
+   */
+  async acceptDistillCandidate(runId: string, candidateId: string): Promise<string | null> {
+    const run = this.distillRuns.get(runId)
+    if (!run) return null
+    const cand = run.candidates.find((c) => c.id === candidateId)
+    if (!cand || cand.status !== 'pending') return null
+
+    const distiller = this.getExperienceDistiller()
+    const exp = await distiller.materializeCandidate(cand)
+    cand.status = 'accepted'
+    cand.acceptedExperienceId = exp.id
+    return exp.id
+  }
+
+  /** Mark a pending candidate rejected. Returns true on success. */
+  rejectDistillCandidate(runId: string, candidateId: string): boolean {
+    const run = this.distillRuns.get(runId)
+    if (!run) return false
+    const cand = run.candidates.find((c) => c.id === candidateId)
+    if (!cand || cand.status !== 'pending') return false
+    cand.status = 'rejected'
+    return true
+  }
+
+  private evictOldDistillRuns(): void {
+    const MAX_RUNS = 32
+    if (this.distillRuns.size <= MAX_RUNS) return
+    const sorted = [...this.distillRuns.entries()].sort((a, b) =>
+      a[1].startedAt.localeCompare(b[1].startedAt),
+    )
+    while (sorted.length > MAX_RUNS) {
+      const [oldId] = sorted.shift()!
+      this.distillRuns.delete(oldId)
     }
   }
 
