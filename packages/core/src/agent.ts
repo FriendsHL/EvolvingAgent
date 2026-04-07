@@ -36,6 +36,9 @@ import { dataExtractSkill } from './skills/builtin/data-extract.js'
 import { CapabilityMap } from './agent/capability-map.js'
 import { KnowledgeStore } from './knowledge/knowledge-store.js'
 import { CacheMetricsRecorder, type CacheCallRecord } from './metrics/cache-metrics.js'
+import { PromptRegistry } from './prompts/registry.js'
+import { PLANNER_SYSTEM_PROMPT } from './planner/planner.js'
+import { REFLECTOR_SYSTEM_PROMPT } from './reflector/reflector.js'
 import type { AgentCoordinator } from './multi-agent/coordinator.js'
 import type { PromptConfig, LLMCallMetrics } from './types.js'
 
@@ -60,6 +63,14 @@ export interface AgentSharedDeps {
   budgetManager?: BudgetManager
   /** Shared token cache observability recorder (process-wide). Phase 3 Batch 4. */
   cacheMetrics?: CacheMetricsRecorder
+  /**
+   * Shared prompt registry — holds runtime overrides for planner/reflector/
+   * conversational system prompts (Phase 4 C). When omitted, each Agent
+   * constructs a private registry on its own `dataPath`. When provided,
+   * Agent reads from it but does NOT load it (caller is responsible for
+   * having called `await registry.init()` before the Agent runs).
+   */
+  promptRegistry?: PromptRegistry
 }
 
 export interface AgentConfig {
@@ -71,7 +82,11 @@ export interface AgentConfig {
 
 type EventCallback = (event: AgentEvent) => void
 
-const CONVERSATIONAL_SYSTEM_PROMPT = `You are Evolving Agent, an AI assistant that learns and improves over time.
+/**
+ * Baseline (source-code) prompt. See `PLANNER_SYSTEM_PROMPT` note — overrideable
+ * at runtime via PromptRegistry + `data/prompts/active.json`.
+ */
+export const CONVERSATIONAL_SYSTEM_PROMPT = `You are Evolving Agent, an AI assistant that learns and improves over time.
 
 You have access to the following tools and skills:
 
@@ -119,6 +134,8 @@ export class Agent {
   private ownsBudgetManager: boolean
   private cacheMetrics: CacheMetricsRecorder
   private ownsCacheMetrics: boolean
+  private promptRegistry: PromptRegistry
+  private ownsPromptRegistry: boolean
   /** Task id for the in-flight processMessage call; used by the budget guard. */
   private currentTaskId: string | null = null
   /** Knowledge snippets retrieved for the in-flight message; reset per process call. */
@@ -233,6 +250,25 @@ export class Agent {
       this.ownsCacheMetrics = true
     }
 
+    // Prompt registry: shared across sessions when provided, otherwise each
+    // standalone Agent owns its own. Loaded asynchronously in init() for
+    // owned instances; shared instances are expected to be pre-loaded by
+    // SessionManager before the Agent runs its first request.
+    if (shared.promptRegistry) {
+      this.promptRegistry = shared.promptRegistry
+      this.ownsPromptRegistry = false
+    } else {
+      this.promptRegistry = new PromptRegistry({
+        dataPath: config.dataPath,
+        defaults: {
+          planner: PLANNER_SYSTEM_PROMPT,
+          reflector: REFLECTOR_SYSTEM_PROMPT,
+          conversational: CONVERSATIONAL_SYSTEM_PROMPT,
+        },
+      })
+      this.ownsPromptRegistry = true
+    }
+
     // Initialize hooks with core hooks + sandbox for evolved hooks.
     // The context-window-guard gets a summarizer + memory ref so it can
     // compress old turns instead of dropping them.
@@ -263,9 +299,9 @@ export class Agent {
     )
 
     // Initialize components — pass skill registry + capability map to planner
-    this.planner = new Planner(this.llm, this.skills, this.capabilityMap)
+    this.planner = new Planner(this.llm, this.skills, this.capabilityMap, this.promptRegistry)
     this.executor = new Executor(this.tools, this.hooks, this.skills, this.createSkillContext())
-    this.reflector = new Reflector(this.llm)
+    this.reflector = new Reflector(this.llm, this.promptRegistry)
   }
 
   async init(): Promise<void> {
@@ -285,6 +321,9 @@ export class Agent {
     }
     if (this.ownsCacheMetrics) {
       await this.cacheMetrics.init()
+    }
+    if (this.ownsPromptRegistry) {
+      await this.promptRegistry.init()
     }
 
     // Refresh capability map after skills are loaded from disk
@@ -811,7 +850,7 @@ export class Agent {
     string
   > {
     const config: PromptConfig = {
-      systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
+      systemPrompt: this.promptRegistry.get('conversational'),
       skills: [],
       knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
@@ -862,7 +901,7 @@ ${stepsDescription}
 Summarize what was accomplished and any important findings. Be direct and helpful.`
 
     const config: PromptConfig = {
-      systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
+      systemPrompt: this.promptRegistry.get('conversational'),
       skills: [],
       knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
@@ -888,7 +927,7 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
 
   private async generateConversationalResponse(userMessage: string): Promise<string> {
     const config: PromptConfig = {
-      systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
+      systemPrompt: this.promptRegistry.get('conversational'),
       skills: [],
       knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
@@ -926,7 +965,7 @@ ${stepsDescription}
 Summarize what was accomplished and any important findings. Be direct and helpful.`
 
     const config: PromptConfig = {
-      systemPrompt: CONVERSATIONAL_SYSTEM_PROMPT,
+      systemPrompt: this.promptRegistry.get('conversational'),
       skills: [],
       knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),

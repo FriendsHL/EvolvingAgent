@@ -21,6 +21,10 @@ import {
 import { ChannelRegistry } from '../channels/index.js'
 import type { CacheHealthAlertEvent } from '../channels/index.js'
 import { MCPManager } from '../mcp/manager.js'
+import { PromptRegistry } from '../prompts/registry.js'
+import { PLANNER_SYSTEM_PROMPT } from '../planner/planner.js'
+import { REFLECTOR_SYSTEM_PROMPT } from '../reflector/reflector.js'
+import { CONVERSATIONAL_SYSTEM_PROMPT } from '../agent.js'
 import { shellTool } from '../tools/shell.js'
 import { fileReadTool } from '../tools/file-read.js'
 import { fileWriteTool } from '../tools/file-write.js'
@@ -96,6 +100,7 @@ export class SessionManager {
   private embedder?: Embedder
   private budgetManager!: BudgetManager
   private cacheMetrics!: CacheMetricsRecorder
+  private promptRegistry!: PromptRegistry
 
   // System-level hook runner + cron scheduler. Hosts process-wide cron hooks
   // (cache-health-alert today; budget daily reset / experience archival in
@@ -205,6 +210,23 @@ export class SessionManager {
     } else {
       this.cacheMetrics = new CacheMetricsRecorder(this.deps.dataPath)
       await this.cacheMetrics.init()
+    }
+
+    // Prompt registry — shared across sessions so runtime overrides installed
+    // by the optimizer (Phase 4 C) take effect immediately for every session.
+    // Source-code constants remain the authoritative baseline fallback.
+    if (shared.promptRegistry) {
+      this.promptRegistry = shared.promptRegistry
+    } else {
+      this.promptRegistry = new PromptRegistry({
+        dataPath: this.deps.dataPath,
+        defaults: {
+          planner: PLANNER_SYSTEM_PROMPT,
+          reflector: REFLECTOR_SYSTEM_PROMPT,
+          conversational: CONVERSATIONAL_SYSTEM_PROMPT,
+        },
+      })
+      await this.promptRegistry.init()
     }
 
     // Observability tools — register now that cacheMetrics + budgetManager
@@ -330,7 +352,13 @@ export class SessionManager {
       embedder: this.embedder,
       budgetManager: this.budgetManager,
       cacheMetrics: this.cacheMetrics,
+      promptRegistry: this.promptRegistry,
     }
+  }
+
+  /** Access the shared PromptRegistry (for dashboards / optimizer routes). */
+  getPromptRegistry(): PromptRegistry {
+    return this.promptRegistry
   }
 
   /** Access the shared BudgetManager (for dashboards / admin endpoints). */

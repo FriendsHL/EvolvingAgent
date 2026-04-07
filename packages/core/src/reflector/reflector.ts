@@ -2,8 +2,12 @@ import { z } from 'zod'
 import { type LLMProvider, type GenerateResult } from '../llm/provider.js'
 import type { ExecutionStep, PromptConfig, Reflection } from '../types.js'
 import type { HookDraft } from '../hooks/hook-compiler.js'
+import type { PromptRegistry } from '../prompts/registry.js'
 
-const REFLECTOR_SYSTEM_PROMPT = `You are a post-execution reflector for an AI Agent. Analyze the task execution and produce a structured reflection.
+/**
+ * Baseline (source-code) prompt. See `PLANNER_SYSTEM_PROMPT` note.
+ */
+export const REFLECTOR_SYSTEM_PROMPT = `You are a post-execution reflector for an AI Agent. Analyze the task execution and produce a structured reflection.
 
 Given:
 - The original task
@@ -73,7 +77,7 @@ const reflectionSchema = z.object({
 })
 
 export class Reflector {
-  constructor(private llm: LLMProvider) {}
+  constructor(private llm: LLMProvider, private promptRegistry?: PromptRegistry) {}
 
   async reflect(
     task: string,
@@ -94,7 +98,7 @@ export class Reflector {
     const currentInput = `Task: ${task}\nOverall Result: ${overallResult}\n\nExecution Steps:\n${stepsDescription}`
 
     const config: PromptConfig = {
-      systemPrompt: REFLECTOR_SYSTEM_PROMPT,
+      systemPrompt: this.promptRegistry?.get('reflector') ?? REFLECTOR_SYSTEM_PROMPT,
       skills: [],
       knowledge: [],
       history: [],

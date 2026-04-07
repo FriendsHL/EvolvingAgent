@@ -3,9 +3,16 @@ import { type LLMProvider, type GenerateResult } from '../llm/provider.js'
 import type { Experience, Plan, PromptConfig } from '../types.js'
 import type { SkillRegistry } from '../skills/skill-registry.js'
 import type { CapabilityMap } from '../agent/capability-map.js'
+import type { PromptRegistry } from '../prompts/registry.js'
 import { nanoid } from 'nanoid'
 
-const PLANNER_SYSTEM_PROMPT = `You are a task planner for an AI Agent system. Your job is to decompose user tasks into executable steps.
+/**
+ * Baseline (source-code) prompt. Phase 4 C introduced `PromptRegistry` which
+ * can override this at runtime via `data/prompts/active.json`. This constant
+ * remains the authoritative fallback when no override is present — do NOT
+ * mutate it at runtime.
+ */
+export const PLANNER_SYSTEM_PROMPT = `You are a task planner for an AI Agent system. Your job is to decompose user tasks into executable steps.
 
 Each step should specify:
 - A clear description of what to do
@@ -58,6 +65,7 @@ export class Planner {
     private llm: LLMProvider,
     private skills?: SkillRegistry,
     private capabilityMap?: CapabilityMap,
+    private promptRegistry?: PromptRegistry,
   ) {}
 
   async plan(
@@ -72,7 +80,8 @@ export class Planner {
     const capabilitiesSection = this.capabilityMap
       ? this.capabilityMap.describeForPlanner()
       : ''
-    const systemPrompt = PLANNER_SYSTEM_PROMPT
+    const template = this.promptRegistry?.get('planner') ?? PLANNER_SYSTEM_PROMPT
+    const systemPrompt = template
       .replace('{SKILLS_SECTION}', skillsSection)
       .replace('{CAPABILITIES_SECTION}', capabilitiesSection)
 

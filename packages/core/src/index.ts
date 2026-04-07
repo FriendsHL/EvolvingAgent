@@ -145,6 +145,30 @@ export type {
   SystemNoticeEvent,
 } from './channels/index.js'
 
+// Prompt self-optimization (Phase 4 / C stage)
+export { PromptRegistry } from './prompts/registry.js'
+export type { PromptRegistryOptions } from './prompts/registry.js'
+export { PromptOptimizer } from './prompts/optimizer.js'
+export type {
+  ProposeFn,
+  EvaluateFn,
+  PromptOptimizerOptions,
+} from './prompts/optimizer.js'
+export type {
+  PromptId,
+  PromptActiveEntry,
+  PromptActiveFile,
+  PromptHistoryEntry,
+  PromptCandidate,
+  PromptCandidateEvaluation,
+  GateResult,
+  OptimizationRun,
+} from './prompts/types.js'
+export { PROMPT_IDS } from './prompts/types.js'
+export { PLANNER_SYSTEM_PROMPT } from './planner/planner.js'
+export { REFLECTOR_SYSTEM_PROMPT } from './reflector/reflector.js'
+export { CONVERSATIONAL_SYSTEM_PROMPT } from './agent.js'
+
 // MCP integration (Phase 4 / B stage)
 export { MCPManager } from './mcp/manager.js'
 export { MCPClient } from './mcp/client.js'
