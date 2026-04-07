@@ -135,7 +135,6 @@ Return ONLY the JSON array, no markdown fences or extra text.`
     const messages = this.llm.buildMessages({
       systemPrompt: 'You are a task decomposition assistant. Return only valid JSON.',
       skills: [],
-      knowledge: [],
       history: [],
       experiences: [],
       currentInput: prompt,
@@ -172,7 +171,6 @@ Provide a clear, concise summary of what was accomplished.`
     const messages = this.llm.buildMessages({
       systemPrompt: 'You are a task summarization assistant. Be concise and direct.',
       skills: [],
-      knowledge: [],
       history: [],
       experiences: [],
       currentInput: prompt,

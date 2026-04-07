@@ -17,7 +17,6 @@ import { sessionsRoutes } from './routes/sessions.js'
 import { chatRoutes } from './routes/chat.js'
 import { toolsRoutes } from './routes/tools.js'
 import { coordinateRoutes } from './routes/coordinate.js'
-import { knowledgeRoutes } from './routes/knowledge.js'
 import { configRoutes } from './routes/config.js'
 import { mcpRoutes } from './routes/mcp.js'
 import { promptsRoutes } from './routes/prompts.js'
@@ -65,7 +64,6 @@ async function main() {
   app.route('/api/sessions', sessionsRoutes(sessionManager, sessionStore))
   app.route('/api/tools', toolsRoutes())
   app.route('/api/coordinate', coordinateRoutes(DATA_PATH))
-  app.route('/api/knowledge', knowledgeRoutes(DATA_PATH))
   app.route('/api/config', configRoutes(sessionManager))
   app.route('/api/mcp', mcpRoutes(sessionManager, DATA_PATH))
   app.route('/api/prompts', promptsRoutes(sessionManager))

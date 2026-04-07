@@ -53,7 +53,6 @@ export function createLLMProposer(options: ProposeLLMOptions): ProposeFn {
       const messages = llm.buildMessages({
         systemPrompt: META_SYSTEM_PROMPT,
         skills: [],
-        knowledge: [],
         history: [],
         experiences: [],
         currentInput: userInput,

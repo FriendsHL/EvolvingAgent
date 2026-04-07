@@ -210,11 +210,11 @@ export class LLMProvider {
     const systemMsg: ModelMessage = { role: 'system' as const, content: config.systemPrompt }
     messages.push(useAnthropicCache ? withAnthropicCache(systemMsg) : systemMsg)
 
-    // Layer 2: Skills + Knowledge (fairly stable — cache breakpoint 2)
-    if (config.skills.length > 0 || config.knowledge.length > 0) {
+    // Layer 2: Skills (fairly stable — cache breakpoint 2)
+    if (config.skills.length > 0) {
       const skillMsg: ModelMessage = {
         role: 'user' as const,
-        content: formatSkillsAndKnowledge(config.skills, config.knowledge),
+        content: formatSkills(config.skills),
       }
       messages.push(useAnthropicCache ? withAnthropicCache(skillMsg) : skillMsg)
       messages.push({ role: 'assistant' as const, content: 'Understood.' })
@@ -387,18 +387,12 @@ function formatExperiences(experiences: Experience[]): string {
   return `## Related Experiences\n\n${lines.join('\n\n')}`
 }
 
-function formatSkillsAndKnowledge(skills: Skill[], knowledge: string[]): string {
-  const parts: string[] = []
-  if (skills.length > 0) {
-    const skillList = skills
-      .map((s) => `- **${s.name}** (score: ${s.score.toFixed(2)}, used ${s.usageCount}x): ${s.trigger}`)
-      .join('\n')
-    parts.push(`## Available Skills\n\n${skillList}`)
-  }
-  if (knowledge.length > 0) {
-    parts.push(`## Knowledge\n\n${knowledge.join('\n\n')}`)
-  }
-  return parts.join('\n\n')
+function formatSkills(skills: Skill[]): string {
+  if (skills.length === 0) return ''
+  const skillList = skills
+    .map((s) => `- **${s.name}** (score: ${s.score.toFixed(2)}, used ${s.usageCount}x): ${s.trigger}`)
+    .join('\n')
+  return `## Available Skills\n\n${skillList}`
 }
 
 // Sort tools alphabetically for stable prompt cache

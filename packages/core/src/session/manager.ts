@@ -6,7 +6,6 @@ import { Agent, type AgentSharedDeps } from '../agent.js'
 import { ExperienceStore } from '../memory/experience-store.js'
 import { Embedder } from '../memory/embedder.js'
 import { SkillRegistry } from '../skills/skill-registry.js'
-import { KnowledgeStore } from '../knowledge/knowledge-store.js'
 import { ToolRegistry } from '../tools/registry.js'
 import { LLMProvider, type ProviderConfig, type PresetName } from '../llm/provider.js'
 import { BudgetManager, loadBudgetConfig } from '../metrics/budget.js'
@@ -100,7 +99,6 @@ export class SessionManager {
   private llm!: LLMProvider
   private tools!: ToolRegistry
   private skills!: SkillRegistry
-  private knowledgeStore!: KnowledgeStore
   private experienceStore!: ExperienceStore
   private embedder?: Embedder
   private budgetManager!: BudgetManager
@@ -194,14 +192,6 @@ export class SessionManager {
     } else {
       this.experienceStore = new ExperienceStore(this.deps.dataPath)
       await this.experienceStore.init()
-    }
-
-    // Knowledge store
-    if (shared.knowledgeStore) {
-      this.knowledgeStore = shared.knowledgeStore
-    } else {
-      this.knowledgeStore = new KnowledgeStore(this.embedder)
-      await this.knowledgeStore.init(this.deps.dataPath)
     }
 
     // Budget manager — process-wide shared instance. All sessions enforce
@@ -358,7 +348,6 @@ export class SessionManager {
       llm: this.llm,
       tools: this.tools,
       skills: this.skills,
-      knowledgeStore: this.knowledgeStore,
       experienceStore: this.experienceStore,
       embedder: this.embedder,
       budgetManager: this.budgetManager,

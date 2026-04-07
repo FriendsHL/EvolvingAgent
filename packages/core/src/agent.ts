@@ -34,7 +34,6 @@ import { fileBatchSkill } from './skills/builtin/file-batch.js'
 import { scheduleSkill } from './skills/builtin/schedule.js'
 import { dataExtractSkill } from './skills/builtin/data-extract.js'
 import { CapabilityMap } from './agent/capability-map.js'
-import { KnowledgeStore } from './knowledge/knowledge-store.js'
 import { CacheMetricsRecorder, type CacheCallRecord } from './metrics/cache-metrics.js'
 import { PromptRegistry } from './prompts/registry.js'
 import { PLANNER_SYSTEM_PROMPT } from './planner/planner.js'
@@ -49,14 +48,13 @@ import type { PromptConfig, LLMCallMetrics } from './types.js'
  * (legacy behavior). When provided, the Agent skips its own construction and
  * uses the shared instance instead.
  *
- * ShortTermMemory and the per-message currentKnowledge are NEVER shared —
- * each Agent always has its own conversation state.
+ * ShortTermMemory is NEVER shared — each Agent always has its own
+ * conversation state.
  */
 export interface AgentSharedDeps {
   llm?: LLMProvider
   tools?: ToolRegistry
   skills?: SkillRegistry
-  knowledgeStore?: KnowledgeStore
   experienceStore?: import('./memory/experience-store.js').ExperienceStore
   embedder?: Embedder
   /** Shared three-layer token budget manager (process-wide). Phase 3 Batch 4. */
@@ -128,7 +126,6 @@ export class Agent {
   private skillCompiler: SkillCompiler
   private skillValidator: SkillValidator
   private capabilityMap: CapabilityMap
-  private knowledgeStore: KnowledgeStore
   private summarizer: ConversationSummarizer
   private budgetManager: BudgetManager
   private ownsBudgetManager: boolean
@@ -138,8 +135,6 @@ export class Agent {
   private ownsPromptRegistry: boolean
   /** Task id for the in-flight processMessage call; used by the budget guard. */
   private currentTaskId: string | null = null
-  /** Knowledge snippets retrieved for the in-flight message; reset per process call. */
-  private currentKnowledge: string[] = []
   private listeners: EventCallback[] = []
 
   constructor(private config: AgentConfig) {
@@ -288,9 +283,6 @@ export class Agent {
     this.hooks.setSandbox(this.hookSandbox)
     this.hookCompiler = new HookCompiler()
 
-    // Knowledge base — user-curated documents/notes/facts
-    this.knowledgeStore = shared.knowledgeStore ?? new KnowledgeStore(embedder)
-
     // Capability awareness
     this.capabilityMap = new CapabilityMap()
     this.capabilityMap.refresh(
@@ -308,9 +300,6 @@ export class Agent {
     await this.memory.init()
     if (!this.config.shared?.skills) {
       await this.skills.init()
-    }
-    if (!this.config.shared?.knowledgeStore) {
-      await this.knowledgeStore.init(this.config.dataPath)
     }
     // Only load daily counter for a privately-owned budget manager; a shared
     // manager is initialized once by SessionManager.init(). Note: owned
@@ -375,7 +364,6 @@ export class Agent {
         const config: PromptConfig = {
           systemPrompt: 'You are a helpful AI assistant. Respond concisely.',
           skills: [],
-          knowledge: [],
           history: [],
           experiences: [],
           currentInput: prompt,
@@ -484,9 +472,6 @@ export class Agent {
   private async processMessageInner(userMessage: string): Promise<string> {
     this.memory.addMessage('user', userMessage)
     this.emit({ type: 'message', data: { role: 'user', content: userMessage }, timestamp: new Date().toISOString() })
-
-    // 0. Retrieve relevant knowledge snippets for this turn
-    this.currentKnowledge = await this.retrieveKnowledge(userMessage)
 
     // 1. Retrieve related experiences
     const retrieved = await this.memory.search({ text: userMessage, topK: 3 })
@@ -683,9 +668,6 @@ export class Agent {
     this.memory.addMessage('user', userMessage)
     this.emit({ type: 'message', data: { role: 'user', content: userMessage }, timestamp: new Date().toISOString() })
 
-    // 0. Retrieve relevant knowledge snippets for this turn
-    this.currentKnowledge = await this.retrieveKnowledge(userMessage)
-
     // 1. Retrieve related experiences
     yield { type: 'status', message: 'Retrieving experiences...' }
     const retrieved = await this.memory.search({ text: userMessage, topK: 3 })
@@ -852,7 +834,6 @@ export class Agent {
     const config: PromptConfig = {
       systemPrompt: this.promptRegistry.get('conversational'),
       skills: [],
-      knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
       experiences: [],
       currentInput: userMessage,
@@ -903,7 +884,6 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     const config: PromptConfig = {
       systemPrompt: this.promptRegistry.get('conversational'),
       skills: [],
-      knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
       experiences: [],
       currentInput: summaryPrompt,
@@ -929,7 +909,6 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     const config: PromptConfig = {
       systemPrompt: this.promptRegistry.get('conversational'),
       skills: [],
-      knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
       experiences: [],
       currentInput: userMessage,
@@ -967,7 +946,6 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     const config: PromptConfig = {
       systemPrompt: this.promptRegistry.get('conversational'),
       skills: [],
-      knowledge: this.currentKnowledge,
       history: this.memory.getHistory().slice(0, -1),
       experiences: [],
       currentInput: summaryPrompt,
@@ -1036,23 +1014,6 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
 
   getCapabilityMap(): CapabilityMap {
     return this.capabilityMap
-  }
-
-  getKnowledgeStore(): KnowledgeStore {
-    return this.knowledgeStore
-  }
-
-  /** Retrieve top-3 knowledge snippets matching the user message. */
-  private async retrieveKnowledge(userMessage: string): Promise<string[]> {
-    try {
-      if (!this.knowledgeStore.isInitialized() || this.knowledgeStore.size() === 0) {
-        return []
-      }
-      const results = await this.knowledgeStore.search(userMessage, 3)
-      return results.map((r) => r.entry.content)
-    } catch {
-      return []
-    }
   }
 
   getCacheMetrics(): CacheMetricsRecorder {

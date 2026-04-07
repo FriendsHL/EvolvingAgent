@@ -115,7 +115,7 @@ export interface RetrievalQuery {
 
 export interface RetrievalResult {
   id: string
-  type: 'experience' | 'skill' | 'knowledge'
+  type: 'experience' | 'skill'
   content: Experience | Skill
   score: number
   matchSource: ('keyword' | 'semantic' | 'tag')[]
@@ -312,7 +312,6 @@ export interface LLMCallMetrics {
 export interface PromptConfig {
   systemPrompt: string
   skills: Skill[]
-  knowledge: string[]
   history: Array<{ role: 'user' | 'assistant'; content: string }>
   experiences: Experience[]
   currentInput: string

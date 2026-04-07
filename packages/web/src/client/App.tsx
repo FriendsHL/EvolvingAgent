@@ -15,7 +15,6 @@ import MCPPage from './pages/MCPPage.js'
 import PromptsPage from './pages/PromptsPage.js'
 import EventStreamPage from './pages/EventStreamPage.js'
 import CoordinatePage from './pages/CoordinatePage.js'
-import KnowledgePage from './pages/KnowledgePage.js'
 import SettingsPage from './pages/SettingsPage.js'
 
 export default function App() {
@@ -35,7 +34,6 @@ export default function App() {
         <Route path="/prompts" element={<PromptsPage />} />
         <Route path="/events" element={<EventStreamPage />} />
         <Route path="/coordinate" element={<CoordinatePage />} />
-        <Route path="/knowledge" element={<KnowledgePage />} />
         <Route path="/memory" element={<MemoryPage />} />
         <Route path="/memory/:id" element={<ExperienceDetailPage />} />
         <Route path="/hooks" element={<HooksPage />} />

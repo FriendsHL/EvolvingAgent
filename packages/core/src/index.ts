@@ -64,9 +64,6 @@ export type {
   CacheHealthAlertOptions,
 } from './hooks/core-hooks/cache-health-alert.js'
 
-export { KnowledgeStore } from './knowledge/knowledge-store.js'
-export type { KnowledgeEntry, KnowledgeSearchResult } from './knowledge/types.js'
-
 export { CapabilityMap } from './agent/capability-map.js'
 export type { Capability, FeasibilityResult } from './agent/capability-map.js'
 

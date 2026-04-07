@@ -22,8 +22,8 @@ export interface EvalCase {
    * How to judge the agent's output. At least one criterion required.
    */
   criteria: EvalCriterion[]
-  /** Optional setup hints — e.g. preload a specific knowledge entry. */
-  setup?: { knowledge?: string[]; experiences?: string[] }
+  /** Optional setup hints — e.g. preload specific experiences. */
+  setup?: { experiences?: string[] }
   /** Soft per-case timeout in ms. Default 120_000. */
   timeoutMs?: number
 }

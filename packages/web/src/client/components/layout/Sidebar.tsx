@@ -11,7 +11,6 @@ const NAV_ITEMS = [
   { path: '/mcp', label: 'MCP', icon: '🔌' },
   { path: '/prompts', label: 'Prompts', icon: '✏️' },
   { path: '/coordinate', label: 'Coordinate', icon: '🔄' },
-  { path: '/knowledge', label: 'Knowledge', icon: '📚' },
   { path: '/memory', label: 'Memory', icon: '🧠' },
   { path: '/hooks', label: 'Hooks', icon: '🔗' },
   { path: '/metrics', label: 'Metrics', icon: '📈' },

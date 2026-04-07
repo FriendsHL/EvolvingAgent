@@ -88,7 +88,6 @@ export class Planner {
     const config: PromptConfig = {
       systemPrompt,
       skills: [],
-      knowledge: [],
       history,
       experiences: relatedExperiences,
       currentInput: userMessage,

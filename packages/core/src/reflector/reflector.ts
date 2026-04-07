@@ -100,7 +100,6 @@ export class Reflector {
     const config: PromptConfig = {
       systemPrompt: this.promptRegistry?.get('reflector') ?? REFLECTOR_SYSTEM_PROMPT,
       skills: [],
-      knowledge: [],
       history: [],
       experiences: [],
       currentInput,
