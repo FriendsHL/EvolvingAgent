@@ -208,8 +208,14 @@ export class Agent {
       this.budgetManager = new BudgetManager(
         {
           global: { perSession: 2_000_000, perDay: 10_000_000 },
-          main: { perTask: 200_000, warnRatio: 0.8 },
-          subAgent: { defaultPerTask: 50_000, warnRatio: 0.8, downgradeModel: 'claude-haiku-4-5-20251001' },
+          main: { perTask: 200_000, warnRatio: 0.8, overBehavior: 'block' },
+          subAgent: {
+            enabled: true,
+            defaultPerTask: 50_000,
+            warnRatio: 0.8,
+            overBehavior: 'downgrade',
+            downgradeModel: 'claude-haiku-4-5-20251001',
+          },
         },
         config.dataPath,
       )
@@ -337,7 +343,7 @@ export class Agent {
           provider: this.llm.getProviderType(),
         }
         const messages = this.llm.buildMessages(config)
-        const result = await this.llm.generate('executor', messages)
+        const result = await this.llm.generate('executor', messages, undefined, this.currentLLMCallOptions())
         this.trackMetrics(result.metrics)
         return result.text
       },
@@ -351,10 +357,28 @@ export class Agent {
   private subAgentTaskId: string | null = null
   private subAgentTokenBudget: number | undefined
 
+  /**
+   * Per-task model override produced by the most recent before:llm-call hook
+   * chain (e.g. budget-guard's downgrade decision). Captured at the start of
+   * a turn and threaded into Agent-level llm.generate / llm.stream calls
+   * during that turn. Cleared in the processMessage finally block.
+   */
+  private currentModelOverride: string | undefined
+
   /** Called by SubAgent wrapper before dispatching a task. */
   setSubAgentScope(taskId: string | null, tokenBudget?: number): void {
     this.subAgentTaskId = taskId
     this.subAgentTokenBudget = tokenBudget
+  }
+
+  /**
+   * Build the per-call options to thread into `llm.generate` / `llm.stream`
+   * for an Agent-level LLM call. Currently only carries the model override
+   * captured from the budget-guard hook. Returns undefined when no override
+   * is active so we don't churn allocations on the hot path.
+   */
+  private currentLLMCallOptions(): { modelOverride: string } | undefined {
+    return this.currentModelOverride ? { modelOverride: this.currentModelOverride } : undefined
   }
 
   private getAgentContext(): HookContext['agent'] {
@@ -414,6 +438,7 @@ export class Agent {
         this.budgetManager.clearMainTask(this.currentTaskId)
       }
       this.currentTaskId = null
+      this.currentModelOverride = undefined
     }
   }
 
@@ -444,7 +469,18 @@ export class Agent {
       data: { history: this.memory.getHistory() },
       agent: this.getAgentContext(),
     }
-    await this.hooks.run('before:llm-call', hookContext, { history: this.memory.getHistory() })
+    const hookResult = await this.hooks.run('before:llm-call', hookContext, {
+      history: this.memory.getHistory(),
+    })
+    // Phase 3 Batch 4: capture any model override the budget-guard (or other
+    // modifying hook) may have injected so the downstream LLM call honors it.
+    // NOTE: this only flows into the Agent-level conversational / summary
+    // call sites below — Planner / Executor / Reflector each fire their own
+    // LLM calls without re-running before:llm-call, so the hook's downgrade
+    // decision does NOT propagate into those internal sub-calls. That's an
+    // accepted Phase 3 limitation; widening hook coverage to every internal
+    // LLM call would require threading the hook runner through each module.
+    this.currentModelOverride = (hookResult as { model?: string } | undefined)?.model
 
     // 3. Plan
     this.emit({ type: 'planning', data: 'Analyzing task...', timestamp: new Date().toISOString() })
@@ -590,6 +626,7 @@ export class Agent {
         this.budgetManager.clearMainTask(this.currentTaskId)
       }
       this.currentTaskId = null
+      this.currentModelOverride = undefined
     }
   }
 
@@ -631,7 +668,10 @@ export class Agent {
       data: { history: this.memory.getHistory() },
       agent: this.getAgentContext(),
     }
-    await this.hooks.run('before:llm-call', hookContext, { history: this.memory.getHistory() })
+    const hookResult = await this.hooks.run('before:llm-call', hookContext, {
+      history: this.memory.getHistory(),
+    })
+    this.currentModelOverride = (hookResult as { model?: string } | undefined)?.model
 
     // 3. Plan
     yield { type: 'status', message: 'Planning...' }
@@ -783,7 +823,7 @@ export class Agent {
     const messages = this.llm.buildMessages(config)
     let fullText = ''
 
-    for await (const chunk of this.llm.stream('executor', messages)) {
+    for await (const chunk of this.llm.stream('executor', messages, undefined, this.currentLLMCallOptions())) {
       if (chunk.type === 'text-delta') {
         fullText += chunk.text
         yield { type: 'text-delta', text: chunk.text }
@@ -834,7 +874,7 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     const messages = this.llm.buildMessages(config)
     let fullText = ''
 
-    for await (const chunk of this.llm.stream('executor', messages)) {
+    for await (const chunk of this.llm.stream('executor', messages, undefined, this.currentLLMCallOptions())) {
       if (chunk.type === 'text-delta') {
         fullText += chunk.text
         yield { type: 'text-delta', text: chunk.text }
@@ -858,7 +898,7 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     }
 
     const messages = this.llm.buildMessages(config)
-    const result = await this.llm.generate('executor', messages)
+    const result = await this.llm.generate('executor', messages, undefined, this.currentLLMCallOptions())
     this.trackMetrics(result.metrics)
     return result.text
   }
@@ -896,7 +936,7 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     }
 
     const messages = this.llm.buildMessages(config)
-    const result = await this.llm.generate('executor', messages)
+    const result = await this.llm.generate('executor', messages, undefined, this.currentLLMCallOptions())
     this.trackMetrics(result.metrics)
     return result.text
   }

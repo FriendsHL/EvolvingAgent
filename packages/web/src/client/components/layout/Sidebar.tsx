@@ -39,6 +39,21 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
+      <div className="mt-auto border-t border-gray-700 p-2">
+        <NavLink
+          to="/settings"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+              isActive
+                ? 'bg-blue-600 text-white'
+                : 'hover:bg-gray-800 hover:text-white'
+            }`
+          }
+        >
+          <span>⚙️</span>
+          <span>Settings</span>
+        </NavLink>
+      </div>
     </aside>
   )
 }

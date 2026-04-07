@@ -7,7 +7,7 @@ export type { AgentConfig, AgentSharedDeps } from './agent.js'
 export * from './session/index.js'
 
 export { LLMProvider, PROVIDER_PRESETS } from './llm/provider.js'
-export type { ProviderConfig, ProviderType, PresetName, ModelRole } from './llm/provider.js'
+export type { ProviderConfig, ProviderType, PresetName, ModelRole, LLMCallOptions } from './llm/provider.js'
 
 export { ToolRegistry } from './tools/registry.js'
 export { shellTool } from './tools/shell.js'
@@ -41,11 +41,18 @@ export { MetricsCollector } from './metrics/collector.js'
 export {
   BudgetManager,
   loadBudgetConfig,
+  cloneBudgetConfig,
   estimateMessageTokens,
   estimateHistoryTokens,
   DEFAULT_BUDGET_CONFIG,
 } from './metrics/budget.js'
-export type { BudgetConfig, BudgetCheck, BudgetUsageScope } from './metrics/budget.js'
+export type {
+  BudgetConfig,
+  BudgetCheck,
+  BudgetUsageScope,
+  OverBehavior,
+  SubAgentOverBehavior,
+} from './metrics/budget.js'
 export { createBudgetGuard, createBudgetRecorder } from './hooks/core-hooks/budget-guard.js'
 export { CacheMetricsRecorder } from './metrics/cache-metrics.js'
 export type { CacheCallRecord, CacheAggregate } from './metrics/cache-metrics.js'

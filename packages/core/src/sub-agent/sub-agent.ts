@@ -161,6 +161,13 @@ export class SubAgent {
         return
       }
 
+      // Phase 3 Batch 4 fix: install the sub-agent scope on the underlying
+      // Agent so the budget-guard hook's Layer 1 enforcement actually fires
+      // for this task. Without this call, `subAgentTaskId` stays null and
+      // Layer 1 is dead code. Cleared in `finally` below regardless of
+      // success / failure / cancellation.
+      this.agent.setSubAgentScope(assign.taskId, assign.config.tokenBudget)
+
       const answer = await this.agent.processMessage(composed)
 
       // === Cancellation checkpoint #2: result post-processing ===
@@ -216,6 +223,10 @@ export class SubAgent {
       }
       await this.transport.send(failure)
     } finally {
+      // Always clear the sub-agent scope so subsequent calls on this Agent
+      // (including any reuse for a follow-up task) don't leak the previous
+      // task's budget context.
+      this.agent.setSubAgentScope(null)
       this.currentTaskId = null
     }
   }

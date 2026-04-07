@@ -60,19 +60,32 @@ export function createBudgetGuard(budgetManager: BudgetManager): Hook {
 
       const { sessionId, taskId, subAgentTaskId, subAgentTokenBudget } = context.agent
 
+      // Re-read the live config on every call so PUT /api/config/budget hot
+      // reloads take effect immediately without re-registering the hook.
+      const config = budgetManager.getConfig()
+
       // --- Layer 3: global (session + daily) ---
+      // Always-on hard ceiling — no policy knob, just enforce.
       const globalCheck = budgetManager.checkGlobal(sessionId, estimate)
       if (globalCheck.decision === 'block') {
         throw new Error(`[budget-guard] ${globalCheck.reason} [layer=global]`)
       }
 
       // --- Layer 2: main per-task ---
+      // Policy: block | warn-only (downgrade is intentionally NOT offered for
+      // the main layer — silent model swaps on user-initiated calls would be
+      // surprising).
       if (taskId) {
         const mainCheck = budgetManager.checkMain(taskId, estimate)
-        if (mainCheck.decision === 'block') {
-          throw new Error(`[budget-guard] ${mainCheck.reason} [layer=main]`)
-        }
-        if (mainCheck.decision === 'warn') {
+        if (mainCheck.decision === 'over') {
+          if (config.main.overBehavior === 'block') {
+            throw new Error(`[budget-guard] ${mainCheck.reason} [layer=main]`)
+          }
+          // warn-only
+          console.warn(
+            `[budget-guard] main task ${taskId} OVER budget (${(mainCheck.ratio * 100).toFixed(0)}%) — warn-only policy, allowing`,
+          )
+        } else if (mainCheck.decision === 'warn') {
           console.warn(
             `[budget-guard] main task ${taskId} at ${(mainCheck.ratio * 100).toFixed(0)}% of budget`,
           )
@@ -80,24 +93,42 @@ export function createBudgetGuard(budgetManager: BudgetManager): Hook {
       }
 
       // --- Layer 1: sub-agent per-task ---
+      // Skipped entirely when the master switch is off.
       let mutatedModel: string | undefined
-      if (subAgentTaskId) {
+      if (subAgentTaskId && config.subAgent.enabled) {
         const subCheck = budgetManager.checkSubAgent(
           subAgentTaskId,
           subAgentTokenBudget,
           estimate,
         )
-        if (subCheck.decision === 'block') {
-          throw new Error(`[budget-guard] ${subCheck.reason} [layer=sub-agent]`)
-        }
-        if (subCheck.decision === 'warn') {
+        if (subCheck.decision === 'over') {
+          switch (config.subAgent.overBehavior) {
+            case 'block':
+              throw new Error(`[budget-guard] ${subCheck.reason} [layer=sub-agent]`)
+            case 'downgrade': {
+              const target = config.subAgent.downgradeModel
+              if (!target) {
+                // Misconfiguration — fall back to block to be safe.
+                throw new Error(
+                  `[budget-guard] ${subCheck.reason} [layer=sub-agent] (downgrade configured but downgradeModel is empty)`,
+                )
+              }
+              console.warn(
+                `[budget-guard] sub-agent task ${subAgentTaskId} OVER budget — downgrading to ${target}`,
+              )
+              mutatedModel = target
+              break
+            }
+            case 'warn-only':
+              console.warn(
+                `[budget-guard] sub-agent task ${subAgentTaskId} OVER budget (${(subCheck.ratio * 100).toFixed(0)}%) — warn-only policy, allowing`,
+              )
+              break
+          }
+        } else if (subCheck.decision === 'warn') {
           console.warn(
             `[budget-guard] sub-agent task ${subAgentTaskId} at ${(subCheck.ratio * 100).toFixed(0)}% of budget`,
           )
-        }
-        if (subCheck.decision === 'downgrade') {
-          console.warn(`[budget-guard] ${subCheck.reason}`)
-          mutatedModel = subCheck.toModel
         }
       }
 

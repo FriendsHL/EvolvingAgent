@@ -13,6 +13,7 @@ import ChatPage from './pages/ChatPage.js'
 import ToolsPage from './pages/ToolsPage.js'
 import CoordinatePage from './pages/CoordinatePage.js'
 import KnowledgePage from './pages/KnowledgePage.js'
+import SettingsPage from './pages/SettingsPage.js'
 
 export default function App() {
   return (
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="/memory/:id" element={<ExperienceDetailPage />} />
         <Route path="/hooks" element={<HooksPage />} />
         <Route path="/metrics" element={<MetricsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
       </Route>
     </Routes>
   )

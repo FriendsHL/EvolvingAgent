@@ -19,6 +19,12 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { ModelMessage } from 'ai'
 
+/** Over-budget behavior allowed for the main user-task layer. */
+export type OverBehavior = 'block' | 'warn-only'
+
+/** Over-budget behavior allowed for the sub-agent layer (downgrade is sub-agent only). */
+export type SubAgentOverBehavior = 'block' | 'downgrade' | 'warn-only'
+
 export interface BudgetConfig {
   global: {
     /** Hard ceiling per session — sum of all LLM calls in one Agent session. */
@@ -31,22 +37,33 @@ export interface BudgetConfig {
     perTask: number
     /** Warn ratio (0..1). When current/budget crosses this, emit a warn. */
     warnRatio: number
+    /** Action when the main task budget is exceeded. */
+    overBehavior: OverBehavior
   }
   subAgent: {
+    /** Master switch — when false, Layer 1 enforcement is skipped entirely. */
+    enabled: boolean
     /** Default per-task budget when TaskAssign.config.tokenBudget is not provided. */
     defaultPerTask: number
     /** Warn ratio (0..1). */
     warnRatio: number
-    /** If set, sub-agent calls over warnRatio switch to this cheaper model. */
-    downgradeModel?: string
+    /** Action when the sub-agent task budget is exceeded. */
+    overBehavior: SubAgentOverBehavior
+    /** Required when overBehavior === 'downgrade'. The model id to switch to. */
+    downgradeModel: string
   }
 }
 
+/**
+ * Discriminated check result. The `BudgetManager.check*` methods only report
+ * the raw situation (allow / warn / over / global block); the budget-guard
+ * hook owns the policy decision (block vs downgrade vs warn-only).
+ */
 export type BudgetCheck =
   | { decision: 'allow' }
   | { decision: 'warn'; ratio: number }
-  | { decision: 'downgrade'; toModel: string; reason: string }
-  | { decision: 'block'; reason: string; layer: 'global' | 'main' | 'sub-agent' }
+  | { decision: 'over'; ratio: number; reason: string; layer: 'main' | 'sub-agent' }
+  | { decision: 'block'; reason: string; layer: 'global' }
 
 export interface BudgetUsageScope {
   sessionId: string
@@ -62,10 +79,13 @@ export const DEFAULT_BUDGET_CONFIG: BudgetConfig = {
   main: {
     perTask: 200_000,
     warnRatio: 0.8,
+    overBehavior: 'block',
   },
   subAgent: {
+    enabled: true,
     defaultPerTask: 50_000,
     warnRatio: 0.8,
+    overBehavior: 'downgrade',
     downgradeModel: 'claude-haiku-4-5-20251001',
   },
 }
@@ -112,6 +132,7 @@ interface DailyFile {
 
 export class BudgetManager {
   private config: BudgetConfig
+  private dataPath: string
   private dailyPath: string
 
   // In-memory counters (process lifetime only — NOT persisted).
@@ -124,7 +145,8 @@ export class BudgetManager {
   private dirty = false
 
   constructor(config: BudgetConfig, dataPath: string) {
-    this.config = config
+    this.config = cloneBudgetConfig(config)
+    this.dataPath = dataPath
     this.dailyPath = join(dataPath, 'metrics', 'budget-daily.json')
   }
 
@@ -181,14 +203,15 @@ export class BudgetManager {
     const used = this.mainTaskTotals.get(taskId) ?? 0
     const budget = this.config.main.perTask
     const projected = used + estimatedTokens
+    const ratio = projected / budget
     if (projected > budget) {
       return {
-        decision: 'block',
+        decision: 'over',
+        ratio,
         reason: `main task budget exceeded (${used}/${budget}, +${estimatedTokens} requested)`,
         layer: 'main',
       }
     }
-    const ratio = projected / budget
     if (ratio >= this.config.main.warnRatio) {
       return { decision: 'warn', ratio }
     }
@@ -207,22 +230,16 @@ export class BudgetManager {
     const effectiveBudget = budget && budget > 0 ? budget : this.config.subAgent.defaultPerTask
     const used = this.subAgentTaskTotals.get(subAgentTaskId) ?? 0
     const projected = used + estimatedTokens
+    const ratio = projected / effectiveBudget
     if (projected > effectiveBudget) {
       return {
-        decision: 'block',
+        decision: 'over',
+        ratio,
         reason: `sub-agent task budget exceeded (${used}/${effectiveBudget}, +${estimatedTokens} requested)`,
         layer: 'sub-agent',
       }
     }
-    const ratio = projected / effectiveBudget
     if (ratio >= this.config.subAgent.warnRatio) {
-      if (this.config.subAgent.downgradeModel) {
-        return {
-          decision: 'downgrade',
-          toModel: this.config.subAgent.downgradeModel,
-          reason: `sub-agent task over warn ratio (${ratio.toFixed(2)}) — downgrading to cheaper model`,
-        }
-      }
       return { decision: 'warn', ratio }
     }
     return { decision: 'allow' }
@@ -284,8 +301,29 @@ export class BudgetManager {
     return this.daily[date] ?? 0
   }
 
+  /**
+   * Returns a deep clone of the current effective config so external callers
+   * (REST endpoints, dashboards) cannot mutate the live config in place.
+   */
   getConfig(): BudgetConfig {
-    return this.config
+    return cloneBudgetConfig(this.config)
+  }
+
+  /**
+   * Hot-swap the live config. In-memory counters (session/main/sub-agent
+   * totals + persisted daily) are intentionally preserved — only the config
+   * reference is replaced. Any subsequent `check*` calls use the new policy
+   * immediately.
+   */
+  updateConfig(cfg: BudgetConfig): void {
+    this.config = cloneBudgetConfig(cfg)
+  }
+
+  /** Persist the current config to `<dataPath>/config/budget.json`. */
+  async saveConfig(): Promise<void> {
+    const configPath = join(this.dataPath, 'config', 'budget.json')
+    await mkdir(dirname(configPath), { recursive: true })
+    await writeFile(configPath, JSON.stringify(this.config, null, 2), 'utf-8')
   }
 
   // ----------------------------------------------------------
@@ -319,20 +357,36 @@ export class BudgetManager {
 // ============================================================
 
 /**
+ * Deep-clone a BudgetConfig. Used by `getConfig` / `updateConfig` so callers
+ * cannot mutate the live policy in place.
+ */
+export function cloneBudgetConfig(cfg: BudgetConfig): BudgetConfig {
+  return {
+    global: { ...cfg.global },
+    main: { ...cfg.main },
+    subAgent: { ...cfg.subAgent },
+  }
+}
+
+/**
  * Load budget config from `<dataPath>/config/budget.json`. Missing file or
- * partial config falls back to DEFAULT_BUDGET_CONFIG on a per-field basis.
+ * partial config falls back to DEFAULT_BUDGET_CONFIG field-by-field, so an
+ * older on-disk config without the new Phase 3 Batch 4 fields (overBehavior,
+ * subAgent.enabled) keeps working without manual migration.
  */
 export async function loadBudgetConfig(dataPath: string): Promise<BudgetConfig> {
   const configPath = join(dataPath, 'config', 'budget.json')
   try {
     const raw = await readFile(configPath, 'utf-8')
-    const parsed = JSON.parse(raw) as Partial<BudgetConfig>
+    const parsed = JSON.parse(raw) as DeepPartial<BudgetConfig>
     return {
       global: { ...DEFAULT_BUDGET_CONFIG.global, ...(parsed.global ?? {}) },
       main: { ...DEFAULT_BUDGET_CONFIG.main, ...(parsed.main ?? {}) },
       subAgent: { ...DEFAULT_BUDGET_CONFIG.subAgent, ...(parsed.subAgent ?? {}) },
     }
   } catch {
-    return { ...DEFAULT_BUDGET_CONFIG }
+    return cloneBudgetConfig(DEFAULT_BUDGET_CONFIG)
   }
 }
+
+type DeepPartial<T> = { [K in keyof T]?: Partial<T[K]> }

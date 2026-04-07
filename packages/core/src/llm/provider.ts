@@ -92,6 +92,22 @@ export type PresetName = keyof typeof PROVIDER_PRESETS
 
 export type ModelRole = 'planner' | 'executor' | 'reflector'
 
+/**
+ * Optional per-call options for `LLMProvider.generate` / `stream`.
+ *
+ * Currently used by the budget-guard hook to force a downgrade target model
+ * when a sub-agent task crosses its budget. Future call sites may extend
+ * this without breaking existing callers.
+ */
+export interface LLMCallOptions {
+  /**
+   * Per-call model id override. When set, bypasses the role-to-model
+   * mapping (`config.models[role]`) and uses this specific model id for
+   * exactly this call. Used by the budget-guard downgrade path.
+   */
+  modelOverride?: string
+}
+
 export class LLMProvider {
   private config: ProviderConfig
   private models: Record<ModelRole, AnyModel>
@@ -126,34 +142,48 @@ export class LLMProvider {
     return LLMProvider.fromPreset('anthropic')
   }
 
-  private createModels(config: ProviderConfig): Record<ModelRole, AnyModel> {
-    const createModel = (modelId: string): AnyModel => {
-      switch (config.type) {
-        case 'anthropic': {
-          const provider = createAnthropic({ apiKey: config.apiKey })
-          return provider(modelId)
-        }
-        case 'openai': {
-          const provider = createOpenAI({ apiKey: config.apiKey })
-          // Use chat() for Chat Completions API (broader compatibility)
-          return provider.chat(modelId)
-        }
-        case 'openai-compatible': {
-          const provider = createOpenAI({
-            apiKey: config.apiKey ?? process.env.DASHSCOPE_API_KEY,
-            baseURL: config.baseURL,
-          })
-          // Must use chat() — compatible endpoints don't support Responses API
-          return provider.chat(modelId)
-        }
+  private createModelInstance(modelId: string): AnyModel {
+    const config = this.config
+    switch (config.type) {
+      case 'anthropic': {
+        const provider = createAnthropic({ apiKey: config.apiKey })
+        return provider(modelId)
+      }
+      case 'openai': {
+        const provider = createOpenAI({ apiKey: config.apiKey })
+        // Use chat() for Chat Completions API (broader compatibility)
+        return provider.chat(modelId)
+      }
+      case 'openai-compatible': {
+        const provider = createOpenAI({
+          apiKey: config.apiKey ?? process.env.DASHSCOPE_API_KEY,
+          baseURL: config.baseURL,
+        })
+        // Must use chat() — compatible endpoints don't support Responses API
+        return provider.chat(modelId)
       }
     }
+  }
 
+  private createModels(config: ProviderConfig): Record<ModelRole, AnyModel> {
     return {
-      planner: createModel(config.models.planner),
-      executor: createModel(config.models.executor),
-      reflector: createModel(config.models.reflector),
+      planner: this.createModelInstance(config.models.planner),
+      executor: this.createModelInstance(config.models.executor),
+      reflector: this.createModelInstance(config.models.reflector),
     }
+  }
+
+  /**
+   * Resolve the (model instance, model id) tuple for a call. Honors an
+   * optional per-call override; otherwise falls back to the role mapping.
+   * Override-built models are constructed on the fly (not cached) — the
+   * downgrade path is rare enough not to warrant a cache.
+   */
+  private resolveModel(role: ModelRole, override: string | undefined): { model: AnyModel; modelId: string } {
+    if (override && override !== this.config.models[role]) {
+      return { model: this.createModelInstance(override), modelId: override }
+    }
+    return { model: this.models[role], modelId: this.config.models[role] }
   }
 
   getModel(role: ModelRole): AnyModel {
@@ -218,8 +248,9 @@ export class LLMProvider {
     role: ModelRole,
     messages: ModelMessage[],
     tools?: ToolSet,
+    options?: LLMCallOptions,
   ): Promise<GenerateResult> {
-    const model = this.models[role]
+    const { model, modelId: resolvedModelId } = this.resolveModel(role, options?.modelOverride)
     const startTime = Date.now()
 
     const result = await generateText({
@@ -246,7 +277,7 @@ export class LLMProvider {
     }
     const totalInput = tokens.prompt + tokens.cacheRead + tokens.cacheWrite
     const cacheHitRate = totalInput > 0 ? tokens.cacheRead / totalInput : 0
-    const modelId = this.config.models[role]
+    const modelId = resolvedModelId
     const { cost, savedCost } = computeCost(modelId, this.config.type, tokens)
 
     const metrics: LLMCallMetrics = {
@@ -276,8 +307,9 @@ export class LLMProvider {
     role: ModelRole,
     messages: ModelMessage[],
     tools?: ToolSet,
+    options?: LLMCallOptions,
   ): AsyncGenerator<{ type: 'text-delta'; text: string } | { type: 'finish'; metrics: LLMCallMetrics }> {
-    const model = this.models[role]
+    const { model, modelId: resolvedModelId } = this.resolveModel(role, options?.modelOverride)
     const startTime = Date.now()
 
     const result = streamText({
@@ -307,7 +339,7 @@ export class LLMProvider {
     }
     const totalInput = tokens.prompt + tokens.cacheRead + tokens.cacheWrite
     const cacheHitRate = totalInput > 0 ? tokens.cacheRead / totalInput : 0
-    const modelId = this.config.models[role]
+    const modelId = resolvedModelId
     const { cost, savedCost } = computeCost(modelId, this.config.type, tokens)
 
     yield {
