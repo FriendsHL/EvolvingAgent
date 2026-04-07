@@ -12,6 +12,7 @@ import SessionDetailPage from './pages/SessionDetailPage.js'
 import ChatPage from './pages/ChatPage.js'
 import ToolsPage from './pages/ToolsPage.js'
 import MCPPage from './pages/MCPPage.js'
+import PromptsPage from './pages/PromptsPage.js'
 import CoordinatePage from './pages/CoordinatePage.js'
 import KnowledgePage from './pages/KnowledgePage.js'
 import SettingsPage from './pages/SettingsPage.js'
@@ -30,6 +31,7 @@ export default function App() {
         <Route path="/skills" element={<SkillsPage />} />
         <Route path="/tools" element={<ToolsPage />} />
         <Route path="/mcp" element={<MCPPage />} />
+        <Route path="/prompts" element={<PromptsPage />} />
         <Route path="/coordinate" element={<CoordinatePage />} />
         <Route path="/knowledge" element={<KnowledgePage />} />
         <Route path="/memory" element={<MemoryPage />} />
