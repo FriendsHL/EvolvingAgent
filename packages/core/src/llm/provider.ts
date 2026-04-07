@@ -7,6 +7,7 @@ type AnyModel = any
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createOpenAI } from '@ai-sdk/openai'
 import type { Experience, LLMCallMetrics, PromptConfig, Skill, ToolDefinition } from '../types.js'
+import { extractCacheTokens } from '../metrics/extract-cache-tokens.js'
 import { nanoid } from 'nanoid'
 
 // ============================================================
@@ -228,11 +229,20 @@ export class LLMProvider {
     })
 
     const usage = result.usage
+    // Ask the provider-agnostic extractor for cache tokens. It prefers the
+    // normalized usage and falls back to raw providerMetadata for each
+    // provider. Keeps us working even if the SDK's normalization misses an
+    // edge case (e.g. OpenAI-compatible endpoints via 百炼/deepseek).
+    const extracted = extractCacheTokens(
+      result.providerMetadata as Record<string, unknown> | undefined,
+      this.config.type,
+      usage,
+    )
     const tokens = {
       prompt: usage?.inputTokens ?? 0,
       completion: usage?.outputTokens ?? 0,
-      cacheWrite: usage?.inputTokenDetails?.cacheWriteTokens ?? 0,
-      cacheRead: usage?.inputTokenDetails?.cacheReadTokens ?? 0,
+      cacheWrite: extracted.cacheCreationTokens,
+      cacheRead: extracted.cacheReadTokens,
     }
     const totalInput = tokens.prompt + tokens.cacheRead + tokens.cacheWrite
     const cacheHitRate = totalInput > 0 ? tokens.cacheRead / totalInput : 0
@@ -242,6 +252,7 @@ export class LLMProvider {
     const metrics: LLMCallMetrics = {
       callId: nanoid(),
       model: modelId,
+      provider: this.config.type,
       timestamp: new Date().toISOString(),
       tokens,
       cacheHitRate,
@@ -280,11 +291,19 @@ export class LLMProvider {
     }
 
     const usage = await result.usage
+    let providerMetadata: Record<string, unknown> | undefined
+    try {
+      const pm = await (result as unknown as { providerMetadata?: PromiseLike<unknown> }).providerMetadata
+      providerMetadata = pm as Record<string, unknown> | undefined
+    } catch {
+      providerMetadata = undefined
+    }
+    const extracted = extractCacheTokens(providerMetadata, this.config.type, usage)
     const tokens = {
       prompt: usage?.inputTokens ?? 0,
       completion: usage?.outputTokens ?? 0,
-      cacheWrite: usage?.inputTokenDetails?.cacheWriteTokens ?? 0,
-      cacheRead: usage?.inputTokenDetails?.cacheReadTokens ?? 0,
+      cacheWrite: extracted.cacheCreationTokens,
+      cacheRead: extracted.cacheReadTokens,
     }
     const totalInput = tokens.prompt + tokens.cacheRead + tokens.cacheWrite
     const cacheHitRate = totalInput > 0 ? tokens.cacheRead / totalInput : 0
@@ -296,6 +315,7 @@ export class LLMProvider {
       metrics: {
         callId: nanoid(),
         model: modelId,
+        provider: this.config.type,
         timestamp: new Date().toISOString(),
         tokens,
         cacheHitRate,

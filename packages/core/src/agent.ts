@@ -14,6 +14,8 @@ import { ConversationSummarizer } from './memory/conversation-summarizer.js'
 import { costHardLimit } from './hooks/core-hooks/cost-hard-limit.js'
 import { safetyCheck } from './hooks/core-hooks/safety-check.js'
 import { metricsCollectorHook, getCollectedMetrics } from './hooks/core-hooks/metrics-collector.js'
+import { createBudgetGuard, createBudgetRecorder } from './hooks/core-hooks/budget-guard.js'
+import { BudgetManager, loadBudgetConfig } from './metrics/budget.js'
 import { MemoryManager } from './memory/memory-manager.js'
 import { Embedder } from './memory/embedder.js'
 import { Planner } from './planner/planner.js'
@@ -33,12 +35,38 @@ import { scheduleSkill } from './skills/builtin/schedule.js'
 import { dataExtractSkill } from './skills/builtin/data-extract.js'
 import { CapabilityMap } from './agent/capability-map.js'
 import { KnowledgeStore } from './knowledge/knowledge-store.js'
+import { CacheMetricsRecorder, type CacheCallRecord } from './metrics/cache-metrics.js'
 import type { AgentCoordinator } from './multi-agent/coordinator.js'
 import type { PromptConfig, LLMCallMetrics } from './types.js'
+
+/**
+ * Shared singletons that can be injected into an Agent so multiple Agent
+ * instances (e.g. one per Session) reuse the same underlying registries and
+ * stores. When a field is omitted, the Agent constructs its own private copy
+ * (legacy behavior). When provided, the Agent skips its own construction and
+ * uses the shared instance instead.
+ *
+ * ShortTermMemory and the per-message currentKnowledge are NEVER shared —
+ * each Agent always has its own conversation state.
+ */
+export interface AgentSharedDeps {
+  llm?: LLMProvider
+  tools?: ToolRegistry
+  skills?: SkillRegistry
+  knowledgeStore?: KnowledgeStore
+  experienceStore?: import('./memory/experience-store.js').ExperienceStore
+  embedder?: Embedder
+  /** Shared three-layer token budget manager (process-wide). Phase 3 Batch 4. */
+  budgetManager?: BudgetManager
+  /** Shared token cache observability recorder (process-wide). Phase 3 Batch 4. */
+  cacheMetrics?: CacheMetricsRecorder
+}
 
 export interface AgentConfig {
   dataPath: string // Path to data/ directory
   provider?: ProviderConfig | PresetName // LLM provider config or preset name (default: auto-detect from env)
+  /** Optional shared singletons (Phase 3 Batch 3 — multi-session). */
+  shared?: AgentSharedDeps
 }
 
 type EventCallback = (event: AgentEvent) => void
@@ -87,6 +115,12 @@ export class Agent {
   private capabilityMap: CapabilityMap
   private knowledgeStore: KnowledgeStore
   private summarizer: ConversationSummarizer
+  private budgetManager: BudgetManager
+  private ownsBudgetManager: boolean
+  private cacheMetrics: CacheMetricsRecorder
+  private ownsCacheMetrics: boolean
+  /** Task id for the in-flight processMessage call; used by the budget guard. */
+  private currentTaskId: string | null = null
   /** Knowledge snippets retrieved for the in-flight message; reset per process call. */
   private currentKnowledge: string[] = []
   private listeners: EventCallback[] = []
@@ -100,8 +134,12 @@ export class Agent {
       totalTokens: 0,
     }
 
+    const shared = config.shared ?? {}
+
     // Initialize LLM provider
-    if (!config.provider) {
+    if (shared.llm) {
+      this.llm = shared.llm
+    } else if (!config.provider) {
       this.llm = LLMProvider.fromEnv()
     } else if (typeof config.provider === 'string') {
       this.llm = LLMProvider.fromPreset(config.provider)
@@ -110,23 +148,31 @@ export class Agent {
     }
 
     // Initialize tool registry with built-in tools
-    this.tools = new ToolRegistry()
-    this.tools.register(shellTool)
-    this.tools.register(fileReadTool)
-    this.tools.register(fileWriteTool)
-    this.tools.register(httpTool)
-    this.tools.register(browserTool)
+    if (shared.tools) {
+      this.tools = shared.tools
+    } else {
+      this.tools = new ToolRegistry()
+      this.tools.register(shellTool)
+      this.tools.register(fileReadTool)
+      this.tools.register(fileWriteTool)
+      this.tools.register(httpTool)
+      this.tools.register(browserTool)
+    }
 
     // Initialize skill registry with built-in skills (8 total)
-    this.skills = new SkillRegistry(config.dataPath)
-    this.skills.register(webSearchSkill)
-    this.skills.register(summarizeUrlSkill)
-    this.skills.register(selfRepairSkill)
-    this.skills.register(githubSkill)
-    this.skills.register(codeAnalysisSkill)
-    this.skills.register(fileBatchSkill)
-    this.skills.register(scheduleSkill)
-    this.skills.register(dataExtractSkill)
+    if (shared.skills) {
+      this.skills = shared.skills
+    } else {
+      this.skills = new SkillRegistry(config.dataPath)
+      this.skills.register(webSearchSkill)
+      this.skills.register(summarizeUrlSkill)
+      this.skills.register(selfRepairSkill)
+      this.skills.register(githubSkill)
+      this.skills.register(codeAnalysisSkill)
+      this.skills.register(fileBatchSkill)
+      this.skills.register(scheduleSkill)
+      this.skills.register(dataExtractSkill)
+    }
 
     // Skill auto-creation from reflection
     this.skillCompiler = new SkillCompiler()
@@ -134,22 +180,60 @@ export class Agent {
 
     // Initialize memory with embedder for RAG (must come before hooks so
     // the context-window-guard can reference ShortTermMemory directly).
-    const embedder = Embedder.fromProviderConfig(
+    const embedder = shared.embedder ?? Embedder.fromProviderConfig(
       this.llm.getProviderType(),
       undefined, // apiKey from env
     )
-    this.memory = new MemoryManager(config.dataPath, embedder)
+    this.memory = new MemoryManager(
+      config.dataPath,
+      embedder,
+      undefined,
+      shared.experienceStore,
+    )
     // Wire the skill registry so experience feedback can influence skill scores.
     this.memory.setSkillRegistry(this.skills)
 
     // Conversation summarizer for long-context management (P8).
     this.summarizer = new ConversationSummarizer(this.llm)
 
+    // Budget manager: shared across sessions when provided, otherwise each
+    // standalone Agent gets its own (legacy callers). The shared instance is
+    // initialized by SessionManager via loadBudgetConfig().
+    if (shared.budgetManager) {
+      this.budgetManager = shared.budgetManager
+      this.ownsBudgetManager = false
+    } else {
+      // Synchronous fallback — use defaults. Agent.init() will attempt to
+      // reload from disk asynchronously (best-effort, non-fatal on miss).
+      this.budgetManager = new BudgetManager(
+        {
+          global: { perSession: 2_000_000, perDay: 10_000_000 },
+          main: { perTask: 200_000, warnRatio: 0.8 },
+          subAgent: { defaultPerTask: 50_000, warnRatio: 0.8, downgradeModel: 'claude-haiku-4-5-20251001' },
+        },
+        config.dataPath,
+      )
+      this.ownsBudgetManager = true
+    }
+
+    // Cache metrics recorder: shared across sessions when provided, otherwise
+    // each standalone Agent gets its own fallback so legacy callers keep
+    // working. Records per-call stats to data/metrics/cache-*.jsonl.
+    if (shared.cacheMetrics) {
+      this.cacheMetrics = shared.cacheMetrics
+      this.ownsCacheMetrics = false
+    } else {
+      this.cacheMetrics = new CacheMetricsRecorder(config.dataPath)
+      this.ownsCacheMetrics = true
+    }
+
     // Initialize hooks with core hooks + sandbox for evolved hooks.
     // The context-window-guard gets a summarizer + memory ref so it can
     // compress old turns instead of dropping them.
     this.hooks = new HookRunner()
     this.hooks.registerAll([
+      createBudgetGuard(this.budgetManager),
+      createBudgetRecorder(this.budgetManager),
       createContextWindowGuard({
         summarizer: this.summarizer,
         memory: this.memory.shortTerm,
@@ -163,7 +247,7 @@ export class Agent {
     this.hookCompiler = new HookCompiler()
 
     // Knowledge base — user-curated documents/notes/facts
-    this.knowledgeStore = new KnowledgeStore(embedder)
+    this.knowledgeStore = shared.knowledgeStore ?? new KnowledgeStore(embedder)
 
     // Capability awareness
     this.capabilityMap = new CapabilityMap()
@@ -180,8 +264,22 @@ export class Agent {
 
   async init(): Promise<void> {
     await this.memory.init()
-    await this.skills.init()
-    await this.knowledgeStore.init(this.config.dataPath)
+    if (!this.config.shared?.skills) {
+      await this.skills.init()
+    }
+    if (!this.config.shared?.knowledgeStore) {
+      await this.knowledgeStore.init(this.config.dataPath)
+    }
+    // Only load daily counter for a privately-owned budget manager; a shared
+    // manager is initialized once by SessionManager.init(). Note: owned
+    // instances use the default config (sync-constructed in the ctor) — full
+    // on-disk config loading is available via the shared path.
+    if (this.ownsBudgetManager) {
+      await this.budgetManager.init()
+    }
+    if (this.ownsCacheMetrics) {
+      await this.cacheMetrics.init()
+    }
 
     // Refresh capability map after skills are loaded from disk
     this.capabilityMap.refresh(
@@ -204,6 +302,12 @@ export class Agent {
   /** Shutdown agent background tasks (cron scheduler, etc.). */
   async shutdown(): Promise<void> {
     this.hooks.stopScheduler()
+    if (this.ownsBudgetManager) {
+      await this.budgetManager.shutdown()
+    }
+    if (this.ownsCacheMetrics) {
+      await this.cacheMetrics.shutdown()
+    }
   }
 
   onEvent(callback: EventCallback): void {
@@ -243,17 +347,51 @@ export class Agent {
     }
   }
 
+  /** Optional sub-agent scope set by the SubAgent wrapper. Null for main Agent. */
+  private subAgentTaskId: string | null = null
+  private subAgentTokenBudget: number | undefined
+
+  /** Called by SubAgent wrapper before dispatching a task. */
+  setSubAgentScope(taskId: string | null, tokenBudget?: number): void {
+    this.subAgentTaskId = taskId
+    this.subAgentTokenBudget = tokenBudget
+  }
+
   private getAgentContext(): HookContext['agent'] {
     return {
       sessionId: this.session.id,
       totalCost: this.session.totalCost,
       tokenCount: this.session.totalTokens,
+      taskId: this.currentTaskId ?? undefined,
+      subAgentTaskId: this.subAgentTaskId ?? undefined,
+      subAgentTokenBudget: this.subAgentTokenBudget,
     }
   }
 
   private trackMetrics(metrics: LLMCallMetrics): void {
     this.session.totalCost += metrics.cost
     this.session.totalTokens += metrics.tokens.prompt + metrics.tokens.completion
+
+    // Phase 3 Batch 4 — cache observability. Record the per-call row here
+    // (after every LLM call, regardless of whether it came from planner,
+    // executor, reflector, summarizer, or skill context) because this is the
+    // single funnel where we already have sessionId / taskId / subAgentTaskId
+    // in scope. This keeps LLMProvider itself stateless/shared and avoids
+    // threading context through every call site.
+    const record: CacheCallRecord = {
+      ts: Date.parse(metrics.timestamp) || Date.now(),
+      sessionId: this.session.id,
+      taskId: this.currentTaskId ?? undefined,
+      subAgentTaskId: this.subAgentTaskId ?? undefined,
+      model: metrics.model,
+      provider: metrics.provider ?? this.llm.getProviderType(),
+      inputTokens: metrics.tokens.prompt,
+      outputTokens: metrics.tokens.completion,
+      cacheCreationTokens: metrics.tokens.cacheWrite,
+      cacheReadTokens: metrics.tokens.cacheRead,
+      latencyMs: metrics.duration,
+    }
+    this.cacheMetrics.record(record)
 
     // Fire after:llm-call hook (void mode — metrics collection)
     this.hooks.runVoid('after:llm-call', {
@@ -268,6 +406,18 @@ export class Agent {
    * Input → Retrieve → Plan → Execute → Respond → Reflect → Store
    */
   async processMessage(userMessage: string): Promise<string> {
+    this.currentTaskId = nanoid()
+    try {
+      return await this.processMessageInner(userMessage)
+    } finally {
+      if (this.currentTaskId) {
+        this.budgetManager.clearMainTask(this.currentTaskId)
+      }
+      this.currentTaskId = null
+    }
+  }
+
+  private async processMessageInner(userMessage: string): Promise<string> {
     this.memory.addMessage('user', userMessage)
     this.emit({ type: 'message', data: { role: 'user', content: userMessage }, timestamp: new Date().toISOString() })
 
@@ -422,6 +572,28 @@ export class Agent {
    * The final response text is streamed token-by-token via text-delta events.
    */
   async *processMessageStream(userMessage: string): AsyncGenerator<
+    | { type: 'status'; message: string }
+    | { type: 'text-delta'; text: string }
+    | { type: 'tool-call'; step: ExecutionStep }
+    | {
+        type: 'done'
+        response: string
+        metrics: { cost: number; tokens: number }
+        experienceId?: string
+      }
+  > {
+    this.currentTaskId = nanoid()
+    try {
+      yield* this.processMessageStreamInner(userMessage)
+    } finally {
+      if (this.currentTaskId) {
+        this.budgetManager.clearMainTask(this.currentTaskId)
+      }
+      this.currentTaskId = null
+    }
+  }
+
+  private async *processMessageStreamInner(userMessage: string): AsyncGenerator<
     | { type: 'status'; message: string }
     | { type: 'text-delta'; text: string }
     | { type: 'tool-call'; step: ExecutionStep }
@@ -802,6 +974,14 @@ Summarize what was accomplished and any important findings. Be direct and helpfu
     } catch {
       return []
     }
+  }
+
+  getCacheMetrics(): CacheMetricsRecorder {
+    return this.cacheMetrics
+  }
+
+  getBudgetManager(): BudgetManager {
+    return this.budgetManager
   }
 
   getHookSandbox(): HookSandbox {

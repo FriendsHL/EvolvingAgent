@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 
-import { MetricsCollector, SkillRegistry } from '@evolving-agent/core'
+import { MetricsCollector, SkillRegistry, SessionManager } from '@evolving-agent/core'
 import { dashboardRoutes } from './routes/dashboard.js'
 import { metricsRoutes } from './routes/metrics.js'
 import { memoryRoutes } from './routes/memory.js'
@@ -29,12 +29,20 @@ const metrics = new MetricsCollector(DATA_PATH)
 const skillRegistry = new SkillRegistry(DATA_PATH)
 const agentRegistry = new AgentRegistry(DATA_PATH)
 const sessionStore = new SessionStore(DATA_PATH)
+// Phase 3 Batch 3: SessionManager owns shared singletons + per-session Agents.
+const sessionManager = new SessionManager({ dataPath: DATA_PATH })
 
 async function main() {
   await metrics.init()
   await skillRegistry.init()
   await agentRegistry.init()
   await sessionStore.init()
+  await sessionManager.init()
+
+  // Auto-create a "default" session for legacy clients that don't pass sessionId.
+  if (!sessionManager.list().some((s) => s.id === 'default')) {
+    await sessionManager.create({ id: 'default', title: 'Default chat' })
+  }
 
   const app = new Hono()
 
@@ -51,7 +59,7 @@ async function main() {
   app.route('/api/hooks', hooksRoutes())
   app.route('/api/skills', skillsRoutes(skillRegistry))
   app.route('/api/agents', agentsRoutes(agentRegistry))
-  app.route('/api/sessions', sessionsRoutes(sessionStore))
+  app.route('/api/sessions', sessionsRoutes(sessionManager, sessionStore))
   app.route('/api/tools', toolsRoutes())
   app.route('/api/coordinate', coordinateRoutes(DATA_PATH))
   app.route('/api/knowledge', knowledgeRoutes(DATA_PATH))
@@ -88,7 +96,7 @@ async function main() {
   })
 
   // Chat routes (needs broadcast)
-  app.route('/api/chat', chatRoutes(agentRegistry, sessionStore, DATA_PATH, broadcast, metrics))
+  app.route('/api/chat', chatRoutes(agentRegistry, sessionStore, DATA_PATH, broadcast, metrics, sessionManager))
 
   // Serve static files (production: built Vite SPA)
   const __dirname = dirname(fileURLToPath(import.meta.url))

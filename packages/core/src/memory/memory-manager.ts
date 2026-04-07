@@ -16,6 +16,7 @@ export class MemoryManager {
   private vectorIndex?: VectorIndex
   private embedder?: Embedder
   private skillRegistry?: SkillRegistry
+  private experienceStoreShared: boolean
 
   /**
    * Optionally wire a skill registry so that user feedback on experiences can
@@ -25,9 +26,15 @@ export class MemoryManager {
     this.skillRegistry = registry
   }
 
-  constructor(dataPath: string, embedder?: Embedder, retrieverConfig?: RetrieverConfig) {
+  constructor(
+    dataPath: string,
+    embedder?: Embedder,
+    retrieverConfig?: RetrieverConfig,
+    sharedExperienceStore?: ExperienceStore,
+  ) {
     this.shortTerm = new ShortTermMemory()
-    this.experienceStore = new ExperienceStore(dataPath)
+    this.experienceStore = sharedExperienceStore ?? new ExperienceStore(dataPath)
+    this.experienceStoreShared = sharedExperienceStore !== undefined
     this.embedder = embedder
 
     if (embedder) {
@@ -43,7 +50,9 @@ export class MemoryManager {
   }
 
   async init(): Promise<void> {
-    await this.experienceStore.init()
+    if (!this.experienceStoreShared) {
+      await this.experienceStore.init()
+    }
 
     // Populate vector index from existing experiences that have embeddings
     if (this.vectorIndex) {

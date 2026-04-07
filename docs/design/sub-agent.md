@@ -32,48 +32,126 @@ User's only entry point is Main Agent. Sub-Agents are background task processes 
 | Session | A user interaction session, entry always via Main Agent |
 | Sub-Agent | Background task child process spawned by Main, using a Template or ad-hoc |
 
-## Process Isolation
+## Isolation Strategy (Decision: 2026-04-07)
 
-Sub-Agents run as child processes (`child_process.fork`), not in-process:
+**Sub-Agents run in-process, not as child processes.** Each Sub-Agent is a separate
+`Agent` class instance with its own short-term memory, working state, and tool
+registry references — but all instances share the same Node.js process and the
+same single JS thread.
+
+### Why in-process (the decision)
+
+We originally planned `child_process.fork`. After reading the two reference
+implementations we have on disk we changed direction:
+
+- **openclaw** (`/myspace/openclaw/src/agents/subagent-spawn.ts`, 841 lines):
+  zero `child_process` / `spawn` / `fork` usage. Sub-agents are spawned via an
+  in-process `subagent-registry`. The "sandbox" axis is a separate concern
+  (Docker container runtimes), not OS process isolation.
+- **Claude Code** (`/myspace/package/restored-src/src/tasks/`): defines
+  `InProcessTeammateTask`, `LocalAgentTask`, and `RemoteAgentTask` as separate
+  task types. The default sub-agent path is in-process; only `RemoteAgentTask`
+  goes to a separate runtime, and even that is over network, not local fork.
+
+Both production-grade agents independently chose in-process. Their reasoning
+applies to us:
+
+1. **Agent work is IO-bound, not CPU-bound.** Each step waits 1–30s on an LLM
+   HTTP response. Node's single-threaded event loop happily interleaves N
+   concurrent `await llm.generate()` calls. Spawning a process buys nothing
+   for the dominant cost.
+2. **Process startup is expensive vs task duration.** A new Node process needs
+   50–200ms to boot, then must re-import the entire agent codebase, re-init
+   Vercel AI SDK, re-load tool registry, re-open data files. For a task that
+   completes in 5–30s, this is 1–10% pure overhead with zero benefit.
+3. **IPC complicates everything for marginal safety.** Serializing tool
+   results, propagating errors with stack traces, debugging across process
+   boundaries — all real costs. The "safety" upside (kill -9 a stuck child)
+   only matters if sub-agents run untrusted code, which ours don't.
+4. **Shared data layer becomes free.** Experience / Skill / Knowledge stores
+   are in-memory caches over JSON files; in-process sub-agents read directly,
+   no IPC marshaling.
+
+### Node.js concurrency model (terminology)
+
+To be precise about what "in-process" means:
+
+| Mechanism | Memory | Thread | Use case |
+|-----------|--------|--------|----------|
+| `child_process.fork` | Independent V8 | Independent OS thread | True isolation, untrusted code |
+| `worker_threads` | Mostly independent V8 | Independent thread, shared event loop primitives | CPU-bound work (embedding math, hashing) |
+| async/await + Promises | Same V8, same heap | **Same** JS thread | Concurrent IO (our case) |
+
+Sub-Agents use the third option. They are **independent objects on the same
+event loop**, not independent threads. At any instant only one sub-agent's JS
+code is executing; concurrency comes from yielding during `await`.
+
+### Cost we accept
+
+- A sub-agent stuck in a synchronous CPU loop (e.g., infinite regex backtrack)
+  blocks the whole process including Main Agent.
+- An uncaught exception in a sub-agent can crash the process if not properly
+  caught at the SubAgentManager boundary.
+- No `kill -9` ultimate fallback; budget enforcement must work cooperatively
+  via `task:cancel` + the sub-agent's own pre-LLM-call check.
+
+We accept these because (a) sub-agent code is our own, not user-supplied, and
+(b) uncaught exceptions are caught at the manager boundary.
+
+### Topology
 
 ```
-  Why process isolation:
-  1. Main Agent stays responsive while Sub-Agents work (true async)
-  2. Sub-Agent crash/OOM/infinite loop does not affect Main
-  3. Main has kill() as ultimate budget enforcement
-  4. ~50-80MB per child process, acceptable for local use
-  5. IPC latency < 1ms, negligible vs LLM call time (1-30s)
+  ┌────────────────────────────────────────────────────────────┐
+  │              Single Node.js process / single JS thread      │
+  │                                                             │
+  │   ┌──────────┐    ┌──────────┐    ┌──────────┐             │
+  │   │ Session 1 │    │ Session 2 │    │ Session N │            │
+  │   │ Main      │    │ Main      │    │ Main      │            │
+  │   │ Agent     │    │ Agent     │    │ Agent     │            │
+  │   └────┬─────┘    └──────────┘    └──────────┘             │
+  │        │                                                    │
+  │   ┌────┼────┐          (each Session = independent          │
+  │   ▼    ▼    ▼           Main Agent instance + its own       │
+  │ Sub-A Sub-B Sub-C       short-term memory)                  │
+  │                                                             │
+  │   All boxes above = JS objects, scheduled by event loop     │
+  └────────────────────────────────────────────────────────────┘
+
+  ════════════════════════════════════════════════════════════
+  ┌────────────────────────────────────────────────────────┐
+  │   Shared Data Layer (in-memory cache + JSON files)      │
+  │   data/memory/  data/skills/  data/knowledge/           │
+  │   Read: direct access. Write: only via Main's Reflector │
+  └────────────────────────────────────────────────────────┘
 ```
 
-```
-  Process Topology:
+### Future-proofing: Transport adapter
 
-  Terminal 1          Terminal 2
-  ┌──────────────┐   ┌──────────────┐
-  │ CLI Process   │   │ CLI Process   │   User interaction
-  │ (Session 1)   │   │ (Session 2)   │
-  └──────┬───────┘   └──────┬───────┘
-         │                  │
-  ┌──────▼───────┐   ┌─────▼────────┐
-  │ Main Agent    │   │ Main Agent    │   Orchestration
-  │ (process)     │   │ (process)     │
-  └──┬────┬──────┘   └──────────────┘
-     │    │
-  ┌──▼──┐ ┌──▼──┐
-  │Sub-A│ │Sub-B│         Sub-Agent (child processes)
-  │(qa) │ │(log)│
-  └─────┘ └─────┘
+To preserve the option of switching to true process isolation later (e.g. for
+running untrusted user-supplied skills), the IPC protocol below is defined as
+**pure JSON, no function references**, and Sub-Agents talk to Main through a
+`SubAgentTransport` interface:
 
-  ═══════════════════════════════════════════════
-  ┌──────────────────────────────────────────┐
-  │         Shared Data Layer (filesystem)    │
-  │  data/memory/  data/skills/  data/knowledge/
-  └──────────────────────────────────────────┘
+```typescript
+interface SubAgentTransport {
+  send(msg: SubAgentMessage): Promise<void>
+  onMessage(handler: (msg: SubAgentMessage) => void): void
+  close(): Promise<void>
+}
 ```
+
+We ship `InProcessTransport` (direct function call, microtask-scheduled).
+A future `ChildProcessTransport` (JSON-line over `child_process.fork` stdio)
+or `WorkerThreadTransport` (postMessage) can be added without changing any
+sub-agent business logic.
 
 ## IPC Message Protocol
 
-All communication goes through Main Agent (star topology, not mesh):
+All communication goes through Main Agent (star topology, not mesh).
+Although Sub-Agents are currently in-process, the protocol is defined as if
+crossing a process boundary: pure JSON-serializable, no function references,
+no shared mutable objects passed by reference. This preserves the option of
+swapping in a `ChildProcessTransport` later without rewriting sub-agent logic.
 
 ```typescript
 type SubAgentMessage =
@@ -282,7 +360,9 @@ interface AgentTemplate {
   Layer 2: Main Agent monitoring (via IPC progress reports)
   ════════════════════════════════════════════════════════
   tokensUsed > 80% budget → send warning
-  tokensUsed > 100% budget → send task:cancel → wait 3s → kill()
+  tokensUsed > 100% budget → send task:cancel
+  In-process mode: no kill() fallback. Sub-Agent must check
+  cancellation flag at every await point (cooperative cancellation).
 
   Layer 3: Global budget (hard ceiling)
   ════════════════════════════════════════════════════════
@@ -290,8 +370,9 @@ interface AgentTemplate {
   Single Sub-Agent ≤ 20% of task total budget
   Over → stop spawning new Sub-Agents
 
-  Process isolation advantage: Main has kill() as ultimate fallback.
-  Even if Sub-Agent is stuck in CPU-bound loop, Main can force-kill.
+  Note: in-process mode loses the kill() ultimate fallback. A sub-agent
+  stuck in a synchronous CPU loop will block the whole process. We accept
+  this because our sub-agent code is in-house, not user-supplied.
 ```
 
 ## Tool Permission (Three Risk Levels)
@@ -401,7 +482,7 @@ $ evolve agents ask #1 "详细说说"   # Ask specific Sub-Agent
 ## A2A Protocol Compatibility (Future)
 
 ```
-  Internal: TaskAssign/TaskResult (child_process IPC)
+  Internal: TaskAssign/TaskResult (in-process Transport, JSON payloads)
   External: A2A protocol (HTTP + JSON-RPC) via adapter
 
   ┌──────────┐   TaskAssign    ┌──────────────┐   A2A Task    ┌──────────┐

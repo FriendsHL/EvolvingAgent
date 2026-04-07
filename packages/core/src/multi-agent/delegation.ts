@@ -58,40 +58,56 @@ export class TaskDelegator {
       status: 'pending' as const,
     }))
 
-    // Step 3: For each subtask, find a matching agent or use fallback
-    const results: string[] = []
+    // Step 3: For each subtask, find a matching agent or use fallback.
+    //
+    // Subtasks come from the LLM decomposition prompt, which is told they
+    // must be "independent" — so we run them in parallel via Promise.all.
+    // Each subtask's coordinator.routeTask() call now flows through
+    // SubAgentManager.spawn() when the matched agent is sub-agent backed
+    // (see coordinator.ts).
+    //
+    // TODO(cancel): TaskDelegator does not yet expose a top-level cancel
+    // path. When it does, plumb it to coordinator.cancelAll() so every
+    // in-flight sub-agent handle gets a task:cancel.
+    const results: string[] = new Array<string>(subtasks.length)
     let allSuccess = true
 
-    for (let i = 0; i < subtasks.length; i++) {
-      const subtask = subtasks[i]!
-      const spec = subtaskSpecs[i]!
-      subtask.status = 'in-progress'
-      subtask.startedAt = new Date().toISOString()
+    await Promise.all(
+      subtasks.map(async (subtask, i) => {
+        const spec = subtaskSpecs[i]!
+        subtask.status = 'in-progress'
+        subtask.startedAt = new Date().toISOString()
 
-      try {
-        // Try to route via coordinator
-        const routed = await this.coordinator.routeTask(spec.description, fromAgentId)
+        try {
+          // Try to route via coordinator. Sub-agent backed agents are
+          // spawned through SubAgentManager; legacy handlers run inline.
+          const routed = await this.coordinator.routeTask(spec.description, fromAgentId)
 
-        if (routed) {
-          subtask.assignedTo = routed.agentId
-          subtask.result = routed.result
-        } else {
-          // No suitable agent found — use fallback
-          subtask.assignedTo = fromAgentId
-          subtask.result = await fallbackHandler(spec.description)
+          if (routed) {
+            subtask.assignedTo = routed.agentId
+            subtask.result = routed.result
+          } else {
+            // No suitable agent found — use fallback
+            subtask.assignedTo = fromAgentId
+            subtask.result = await fallbackHandler(spec.description)
+          }
+
+          subtask.status = 'completed'
+          subtask.completedAt = new Date().toISOString()
+          results[i] = subtask.result
+        } catch (err) {
+          // Sub-agent failures arrive here as a thrown Error: the
+          // coordinator translates `task:result {outcome:'failure'}` into
+          // an exception so existing TaskDelegator failure handling
+          // applies uniformly.
+          subtask.status = 'failed'
+          subtask.error = err instanceof Error ? err.message : String(err)
+          subtask.completedAt = new Date().toISOString()
+          allSuccess = false
+          results[i] = `[FAILED] ${subtask.error}`
         }
-
-        subtask.status = 'completed'
-        subtask.completedAt = new Date().toISOString()
-        results.push(subtask.result)
-      } catch (err) {
-        subtask.status = 'failed'
-        subtask.error = err instanceof Error ? err.message : String(err)
-        subtask.completedAt = new Date().toISOString()
-        allSuccess = false
-        results.push(`[FAILED] ${subtask.error}`)
-      }
-    }
+      }),
+    )
 
     // Step 4: Aggregate results into a final summary
     const aggregatedResult = await this.aggregate(task, subtasks, results)

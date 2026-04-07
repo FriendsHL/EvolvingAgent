@@ -386,20 +386,68 @@ interface TaskResult { type: 'task:result'; taskId: string; outcome: 'success' |
 **Deliverable:** Agent that evolves its own behavior (hooks), writes tools, accumulates skills, with full safety guarantees.
 
 ### Phase 3: Sub-Agent + Observability + Channels (~2 weeks)
-- [ ] Sub-Agent system: process isolation, IPC protocol, SubAgentManager
-- [ ] Agent Template system: data/agents/ definitions, template matching
-- [ ] Ad-hoc Sub-Agent: auto-generated prompts for parallel tasks
-- [ ] Multi-session support: concurrent Sessions with shared data layer
-- [ ] Token budget control: three-layer enforcement (self/Main/global)
-- [ ] Token cache observability: per-call, task-level, session/daily stats
-- [ ] Cache health alerts (Cron Hook)
-- [ ] Observability tools: metrics-query + log-search + trace
-- [ ] Agent Server (HTTP/WebSocket)
-- [ ] Feishu webhook (simple push notification)
-- [ ] Cron hook support (scheduled tasks)
-- [ ] Eval framework: automated Agent capability assessment
 
-**Deliverable:** Multi-agent system with process isolation, full cost observability, proactive notifications, scheduled tasks.
+**Batch 1 — Streaming + Multi-Agent UI scaffolding (DONE, commit `df126d0`)**
+- [x] Streaming responses through executor
+- [x] Multi-Agent coordinator + delegation + message-bus + templates (in-process)
+- [x] Web UI scaffolding for multi-agent
+- [x] Agent Server (HTTP/WebSocket)
+- [x] Tests for the above
+
+**Batch 2 — Knowledge / Feedback / Cron / Smart Context (DONE, commit `03c765d`)**
+- [x] Knowledge Base: KnowledgeStore (hybrid keyword + vector), Web CRUD
+- [x] User Feedback: Experience.feedback ±0.3 admission score, skill score propagation
+- [x] Cron hook support: HookScheduler (cron-parser, no-drift recursive setTimeout)
+- [x] Smart context management: ConversationSummarizer + rolling summary (100K→50K)
+
+**Batch 3 — Sub-Agent isolation + Multi-session (NEXT)**
+- [ ] Sub-Agent in-process isolation: `core/src/sub-agent/` — `SubAgent` class
+      (independent short-term memory + working state), `SubAgentManager`
+      (lifecycle), `SubAgentTransport` interface, `InProcessTransport` impl
+- [ ] IPC message protocol (semantic layer): `protocol.ts` — `task:assign` /
+      `task:progress` / `task:result` / `task:cancel` / `resource:request` /
+      `resource:grant`. Pure JSON, no function refs (future-proof for
+      `ChildProcessTransport` swap-in)
+- [ ] Multi-session support: `core/src/session/` — `SessionManager`,
+      short-term memory **isolated** per session, experience / skill /
+      knowledge stores **shared** across sessions
+- [ ] Coordinator refactor: `multi-agent/coordinator.ts` delegation routes
+      through `SubAgentManager` instead of inline async calls
+- [ ] Web `ChatPage`: sessionId switcher, list/create/delete sessions
+
+**Decision (2026-04-07):** Sub-Agents run in-process, NOT as `child_process.fork`.
+See `docs/design/sub-agent.md#isolation-strategy-decision-2026-04-07` for the
+full rationale (validated against openclaw and Claude Code source). The
+`SubAgentTransport` interface preserves the option to add a real
+`ChildProcessTransport` later without rewriting business logic.
+
+**Batch 4 — Cost & Cache Observability**
+- [ ] Token budget three-layer control: self / Main / global enforcement
+      (`core/src/metrics/budget.ts`, configured via `data/config/budget.json`,
+      enforced through `before:llm-call` hook)
+- [ ] Token cache observability: per-call → task → session/daily rolling
+      aggregates, persisted to `data/metrics/cache-*.jsonl`. Extract
+      `providerMetadata.cacheReadTokens` from Vercel AI SDK responses.
+- [ ] Cache health alerts: Cron Hook reading the metrics above, fires alert
+      events when hit rate drops below threshold (Batch 5 wires Feishu)
+
+**Batch 5 — Observability tools / Channels / Eval**
+- [ ] Built-in observability tools: `metrics-query` / `log-search` / `trace`
+      (so the Agent can dogfood Batch 4's data)
+- [ ] Channel interface: `core/src/channels/Channel.ts` — `send(event)` /
+      `onMessage(handler)` / `start/stop`. Define interface only, no
+      implementation. Future Feishu Bot (Phase 4) will plug in here. Reference
+      `openclaw/extensions/feishu/src/` (`monitor.ts`, `bot.ts`,
+      `card-interaction.ts`, `reply-dispatcher.ts`) when implementing.
+- [ ] Eval framework: `core/src/eval/` — `EvalRunner` + 10–20 hand-written
+      seed cases in `data/eval/cases/`, CLI command `evolve eval run` outputs
+      success rate / token / latency report
+
+**Test plan:** All five batches develop first, then a unified testing pass
+(unit + integration + dogfood the eval framework on the agent itself).
+
+**Deliverable:** Multi-session agent with sub-agent isolation, full cost
+observability, pluggable channel surface, and self-evaluation framework.
 
 ### Phase 4: Web UI + Advanced Evolution (~3 weeks)
 - [ ] Web UI: visual conversation + skill library + experience network + hook management

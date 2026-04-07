@@ -232,7 +232,19 @@ export interface Hook {
 export interface HookContext {
   trigger: HookTrigger
   data: unknown
-  agent: { sessionId: string; totalCost: number; tokenCount: number }
+  agent: {
+    sessionId: string
+    totalCost: number
+    tokenCount: number
+    /** Current main-agent task id (one per user message); used by the budget guard. */
+    taskId?: string
+    /** Current sub-agent task id when running inside a SubAgent wrapper. */
+    subAgentTaskId?: string
+    /** Per-task hard token budget carried by sub-agent tasks (from TaskAssign.config.tokenBudget). */
+    subAgentTokenBudget?: number
+    /** Desired model id for the pending call (mutable — the budget guard can downgrade it). */
+    model?: string
+  }
 }
 
 // === Channel ===
@@ -247,6 +259,12 @@ export interface AgentMessage {
 
 export type MessageHandler = (message: AgentMessage) => Promise<void>
 
+/**
+ * @deprecated Phase 1 stub. Use the richer `Channel` interface in
+ * `./channels/channel.ts` (exported from `./channels/index.js`) together
+ * with `ChannelRegistry`. This definition is kept only so legacy callers
+ * keep compiling until they are migrated; new code must not use it.
+ */
 export interface Channel {
   id: string
   send(message: AgentMessage): Promise<void>
@@ -270,6 +288,8 @@ export interface Session {
 export interface LLMCallMetrics {
   callId: string
   model: string
+  /** Provider type — e.g. 'anthropic' | 'openai' | 'openai-compatible'. */
+  provider?: string
   timestamp: string
   tokens: {
     prompt: number

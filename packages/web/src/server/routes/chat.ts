@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { Agent, LLMProvider, PROVIDER_PRESETS, type PresetName, MetricsCollector } from '@evolving-agent/core'
+import { Agent, LLMProvider, PROVIDER_PRESETS, type PresetName, MetricsCollector, type SessionManager } from '@evolving-agent/core'
 import type { AgentRegistry } from '../services/agent-registry.js'
 import type { SessionStore, PersistedSession } from '../services/session-store.js'
 
@@ -15,9 +15,63 @@ export function chatRoutes(
   dataPath: string,
   broadcast: (event: unknown) => void,
   metricsCollector?: MetricsCollector,
+  sessionManager?: SessionManager,
 ) {
   const app = new Hono()
   const activeSessions = new Map<string, ActiveSession>()
+
+  // Phase 3 Batch 3 — unified chat endpoint backed by SessionManager.
+  // Body: { message, sessionId? }. If sessionId is omitted, the "default"
+  // session is used so legacy clients keep working.
+  app.post('/', async (c) => {
+    if (!sessionManager) {
+      return c.json({ error: 'SessionManager not configured' }, 500)
+    }
+    const body = await c.req.json<{ message: string; sessionId?: string }>()
+    const targetId = body.sessionId ?? 'default'
+    const session =
+      (await sessionManager.getOrLoad(targetId)) ??
+      (await sessionManager.create({ id: targetId }))
+
+    return streamSSE(c, async (stream) => {
+      try {
+        for await (const event of session.streamMessage(body.message)) {
+          switch (event.type) {
+            case 'status':
+              await stream.writeSSE({ data: JSON.stringify({ type: 'status', content: event.message }) })
+              break
+            case 'text-delta':
+              await stream.writeSSE({ data: JSON.stringify({ type: 'text-delta', content: event.text }) })
+              break
+            case 'tool-call':
+              await stream.writeSSE({ data: JSON.stringify({ type: 'tool-call', step: event.step }) })
+              break
+            case 'done':
+              await sessionManager.persistSession(session)
+              await stream.writeSSE({
+                data: JSON.stringify({
+                  type: 'message',
+                  content: event.response,
+                  experienceId: event.experienceId,
+                }),
+              })
+              await stream.writeSSE({
+                data: JSON.stringify({
+                  type: 'metrics',
+                  totalCost: event.metrics.cost,
+                  totalTokens: event.metrics.tokens,
+                }),
+              })
+              break
+          }
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        await stream.writeSSE({ data: JSON.stringify({ type: 'error', content: errMsg }) })
+      }
+      await stream.writeSSE({ data: JSON.stringify({ type: 'done' }) })
+    })
+  })
 
   // List available providers/presets
   app.get('/providers', (c) => {

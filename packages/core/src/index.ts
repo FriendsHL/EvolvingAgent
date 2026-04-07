@@ -1,7 +1,10 @@
 // Evolving Agent Core — Public API
 
 export { Agent } from './agent.js'
-export type { AgentConfig } from './agent.js'
+export type { AgentConfig, AgentSharedDeps } from './agent.js'
+
+// Multi-Session (Phase 3 Batch 3)
+export * from './session/index.js'
 
 export { LLMProvider, PROVIDER_PRESETS } from './llm/provider.js'
 export type { ProviderConfig, ProviderType, PresetName, ModelRole } from './llm/provider.js'
@@ -12,6 +15,11 @@ export { fileReadTool } from './tools/file-read.js'
 export { fileWriteTool } from './tools/file-write.js'
 export { httpTool } from './tools/http.js'
 export { browserTool, closeBrowser, checkBrowserHealth, resetBrowserState } from './tools/browser.js'
+export {
+  createMetricsQueryTool,
+  createLogSearchTool,
+  createTraceTool,
+} from './tools/observability/index.js'
 
 export { HookRunner } from './hooks/hook-runner.js'
 export { HookCompiler } from './hooks/hook-compiler.js'
@@ -30,6 +38,24 @@ export { VectorIndex, cosineSimilarity } from './memory/vector-index.js'
 export type { ScoredResult } from './memory/vector-index.js'
 export type { RetrieverConfig } from './memory/retriever.js'
 export { MetricsCollector } from './metrics/collector.js'
+export {
+  BudgetManager,
+  loadBudgetConfig,
+  estimateMessageTokens,
+  estimateHistoryTokens,
+  DEFAULT_BUDGET_CONFIG,
+} from './metrics/budget.js'
+export type { BudgetConfig, BudgetCheck, BudgetUsageScope } from './metrics/budget.js'
+export { createBudgetGuard, createBudgetRecorder } from './hooks/core-hooks/budget-guard.js'
+export { CacheMetricsRecorder } from './metrics/cache-metrics.js'
+export type { CacheCallRecord, CacheAggregate } from './metrics/cache-metrics.js'
+export { extractCacheTokens } from './metrics/extract-cache-tokens.js'
+export type { ExtractedCacheTokens, NormalizedUsageLike } from './metrics/extract-cache-tokens.js'
+export { createCacheHealthAlert } from './hooks/core-hooks/cache-health-alert.js'
+export type {
+  CacheHealthAlert,
+  CacheHealthAlertOptions,
+} from './hooks/core-hooks/cache-health-alert.js'
 
 export { KnowledgeStore } from './knowledge/knowledge-store.js'
 export type { KnowledgeEntry, KnowledgeSearchResult } from './knowledge/types.js'
@@ -55,7 +81,6 @@ export { dataExtractSkill } from './skills/builtin/data-extract.js'
 export type {
   AgentEvent,
   AgentMessage,
-  Channel,
   Experience,
   ExecutionStep,
   Hook,
@@ -86,3 +111,42 @@ export type {
 // Multi-Agent Collaboration
 export { MessageBus, AgentCoordinator, TaskDelegator, AGENT_TEMPLATES, profileFromTemplate } from './multi-agent/index.js'
 export type { InterAgentMessage, MessageType, AgentProfile, AgentTemplate, DelegationTask, DelegationResult } from './multi-agent/index.js'
+
+// Sub-Agent in-process isolation (Phase 3 Batch 3)
+export * from './sub-agent/index.js'
+
+// Channel layer (Phase 3 Batch 5). NOTE: this `Channel` is the Phase-3+
+// rich interface in `./channels/channel.ts`; the old `Channel` stub from
+// `./types.ts` is kept (marked `@deprecated`) for legacy callers but is
+// no longer re-exported from the core barrel to avoid a name collision —
+// the new `Channel` wins at the public API surface.
+export { ChannelRegistry } from './channels/index.js'
+export type {
+  Channel,
+  ChannelEvent,
+  ChannelEventType,
+  ChannelEventHandler,
+  BaseChannelEvent,
+  AgentMessageEvent,
+  UserMessageEvent,
+  CacheHealthAlertEvent,
+  BudgetAlertEvent,
+  TaskCompletedEvent,
+  TaskFailedEvent,
+  ToolCallEvent,
+  ToolResultEvent,
+  SystemNoticeEvent,
+} from './channels/index.js'
+
+// Eval framework (Phase 3 Batch 5)
+export { EvalRunner, loadEvalCases, evaluateCriterion } from './eval/index.js'
+export type {
+  EvalCase,
+  EvalCriterion,
+  EvalCaseResult,
+  EvalReport,
+  EvalRunnerDeps,
+  EvalRunOptions,
+  CriterionContext,
+  CriterionVerdict,
+} from './eval/index.js'
