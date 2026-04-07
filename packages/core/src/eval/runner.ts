@@ -1,6 +1,7 @@
 import { SessionManager } from '../session/manager.js'
 import type { LLMProvider, ProviderConfig, PresetName } from '../llm/provider.js'
 import type { AgentEvent, ExecutionStep } from '../types.js'
+import type { PromptRegistry } from '../prompts/registry.js'
 
 import { evaluateCriterion } from './judges.js'
 import type {
@@ -15,6 +16,15 @@ export interface EvalRunnerDeps {
   dataPath: string
   /** Optional explicit provider config. */
   provider?: ProviderConfig | PresetName
+  /**
+   * Optional shared PromptRegistry. When provided, the runner forwards it
+   * into its internal SessionManager so the Agents that grade cases see
+   * any active overrides — including transient ones installed by the
+   * `PromptOptimizer` sandbox loop. Without this, eval would always run
+   * against source-code baselines and the optimizer could not measure
+   * candidate prompts.
+   */
+  promptRegistry?: PromptRegistry
 }
 
 export interface EvalRunOptions {
@@ -46,6 +56,11 @@ export class EvalRunner {
       // Disable the process-wide cache-health cron hook for eval runs —
       // we don't need background noise during a capability sweep.
       cacheHealthAlert: { enabled: false },
+      // Forward the optimizer-owned PromptRegistry so transient overrides
+      // installed in the sandbox propagate to the inner Agents.
+      shared: this.deps.promptRegistry
+        ? { promptRegistry: this.deps.promptRegistry }
+        : undefined,
     })
     await this.manager.init()
 

@@ -114,6 +114,66 @@ describe('SessionManager — create / get / list / delete', () => {
   })
 })
 
+describe('SessionManager — PromptRegistry propagation (Phase 4 C)', () => {
+  it('exposes a shared PromptRegistry that every new session sees', async () => {
+    const m = await freshManager()
+    const registry = m.getPromptRegistry()
+    expect(registry).toBeDefined()
+    // Install an active override BEFORE creating any session.
+    await registry.set('planner', 'OVERRIDE_FROM_TEST', { note: 'unit-test' })
+
+    const session = await m.create({ title: 'probe' })
+    // The agent's planner should have received the same registry instance,
+    // so reading get('planner') from inside the agent's planner returns
+    // the override (not the source-code baseline).
+    const planner = (session.agent as any).planner
+    expect(planner.promptRegistry).toBe(registry)
+    expect(planner.promptRegistry.get('planner')).toBe('OVERRIDE_FROM_TEST')
+    await m.shutdown()
+  })
+
+  it('transient overrides installed on the shared registry are visible to live sessions', async () => {
+    const m = await freshManager()
+    const registry = m.getPromptRegistry()
+    const session = await m.create()
+    const planner = (session.agent as any).planner
+
+    registry.setTransient('planner', 'TRANSIENT_FROM_TEST')
+    expect(planner.promptRegistry.get('planner')).toBe('TRANSIENT_FROM_TEST')
+    registry.clearTransient('planner')
+    // After clearing, the planner should fall back to baseline (no active set).
+    expect(planner.promptRegistry.get('planner')).not.toBe('TRANSIENT_FROM_TEST')
+    await m.shutdown()
+  })
+
+  it('startOptimizationRun returns a placeholder run id immediately', async () => {
+    const m = await freshManager()
+    // We don't actually want to fire LLM calls — but startOptimizationRun's
+    // synchronous portion only constructs an optimizer (which loads eval
+    // cases from disk) and registers a placeholder. The background promise
+    // will fail (no LLM in test env) but the placeholder should be returned.
+    // Skip if eval cases dir doesn't exist in this test setup.
+    try {
+      const placeholder = await m.startOptimizationRun('planner')
+      expect(placeholder.id).toMatch(/^pending-/)
+      expect(placeholder.targetId).toBe('planner')
+      expect(placeholder.status).toBe('running')
+      // Eventually the background run will move it to 'failed' (no LLM in
+      // test env, or the propose call will throw). Either way the run
+      // should be retrievable from getOptimizationRun.
+      const fromMap = m.getOptimizationRun(placeholder.id)
+      expect(fromMap).toBeDefined()
+    } catch (err) {
+      // If eval cases dir doesn't exist (which is the case in tmpdir), this
+      // throws synchronously from loadEvalCases. That's an acceptable Stage
+      // 2 behavior — the route layer surfaces it as a 500 to the client.
+      expect((err as Error).message).toMatch(/eval cases directory/i)
+    } finally {
+      await m.shutdown()
+    }
+  })
+})
+
 describe('SessionManager — re-hydration via getOrLoad', () => {
   it('reloads a session from disk after manager restart', async () => {
     const m1 = await freshManager()

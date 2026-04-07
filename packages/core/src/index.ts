@@ -154,6 +154,9 @@ export type {
   EvaluateFn,
   PromptOptimizerOptions,
 } from './prompts/optimizer.js'
+export { createLLMProposer } from './prompts/propose-llm.js'
+export { createEvalAdapter } from './prompts/eval-adapter.js'
+export type { EvalAdapterOptions } from './prompts/eval-adapter.js'
 export type {
   PromptId,
   PromptActiveEntry,

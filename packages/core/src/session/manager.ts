@@ -22,6 +22,11 @@ import { ChannelRegistry } from '../channels/index.js'
 import type { CacheHealthAlertEvent } from '../channels/index.js'
 import { MCPManager } from '../mcp/manager.js'
 import { PromptRegistry } from '../prompts/registry.js'
+import { PromptOptimizer } from '../prompts/optimizer.js'
+import { createLLMProposer } from '../prompts/propose-llm.js'
+import { createEvalAdapter } from '../prompts/eval-adapter.js'
+import type { OptimizationRun, PromptId } from '../prompts/types.js'
+import { loadEvalCases } from '../eval/loader.js'
 import { PLANNER_SYSTEM_PROMPT } from '../planner/planner.js'
 import { REFLECTOR_SYSTEM_PROMPT } from '../reflector/reflector.js'
 import { CONVERSATIONAL_SYSTEM_PROMPT } from '../agent.js'
@@ -101,6 +106,12 @@ export class SessionManager {
   private budgetManager!: BudgetManager
   private cacheMetrics!: CacheMetricsRecorder
   private promptRegistry!: PromptRegistry
+  // Optimizer is lazily constructed on first request — most sessions never
+  // touch it, no need to spin up the eval-case loader at init time.
+  private promptOptimizer: PromptOptimizer | null = null
+  // In-memory registry of optimization runs. Stage 2 keeps only the last
+  // ~16 runs in memory; Stage 3 may persist them to disk.
+  private optimizationRuns = new Map<string, OptimizationRun>()
 
   // System-level hook runner + cron scheduler. Hosts process-wide cron hooks
   // (cache-health-alert today; budget daily reset / experience archival in
@@ -359,6 +370,98 @@ export class SessionManager {
   /** Access the shared PromptRegistry (for dashboards / optimizer routes). */
   getPromptRegistry(): PromptRegistry {
     return this.promptRegistry
+  }
+
+  /**
+   * Lazily build the prompt optimizer on first call. Loads a representative
+   * subset of eval cases (`reasoning-*` + `instruction-*`) — these have the
+   * cleanest signal for grading planner output and keep cost predictable.
+   * Pass `force: true` to rebuild (e.g. after the eval cases on disk change).
+   */
+  async getPromptOptimizer(force = false): Promise<PromptOptimizer> {
+    if (this.promptOptimizer && !force) return this.promptOptimizer
+    const casesDir = join(this.deps.dataPath, 'eval', 'cases')
+    // Stage 2 hard-codes the planner-friendly subset. Stage 3 will let the
+    // dashboard pick which case ids to grade against.
+    const allCases = await loadEvalCases(casesDir)
+    const subset = allCases.filter(
+      (c) => c.id.startsWith('reasoning-') || c.id.startsWith('instruction-'),
+    )
+    this.promptOptimizer = new PromptOptimizer({
+      registry: this.promptRegistry,
+      cases: subset.length > 0 ? subset : allCases, // fallback to full set if subset empty
+      propose: createLLMProposer({ llm: this.llm }),
+      evaluate: createEvalAdapter({
+        dataPath: this.deps.dataPath,
+        promptRegistry: this.promptRegistry,
+        provider: this.deps.provider,
+      }),
+      defaultCandidateCount: 3,
+    })
+    return this.promptOptimizer
+  }
+
+  /**
+   * Kick off an optimization run in the background. Returns the run id
+   * immediately so the HTTP endpoint can poll for status without blocking.
+   * The run lives in `this.optimizationRuns`; the route layer reads it from
+   * there. Old runs are evicted to keep the map small.
+   */
+  async startOptimizationRun(targetId: PromptId, count?: number): Promise<OptimizationRun> {
+    const optimizer = await this.getPromptOptimizer()
+    // Pre-register a placeholder so callers can immediately poll by id.
+    const placeholder: OptimizationRun = {
+      id: `pending-${Date.now()}`,
+      targetId,
+      startedAt: new Date().toISOString(),
+      status: 'running',
+      candidateCount: count ?? 3,
+    }
+    this.optimizationRuns.set(placeholder.id, placeholder)
+
+    // Fire and forget — the run mutates `optimizationRuns` on completion.
+    void (async () => {
+      try {
+        const real = await optimizer.optimize(targetId, count)
+        // Replace placeholder under the real run id, but also keep the
+        // placeholder id pointing at the same object so polling works.
+        this.optimizationRuns.set(real.id, real)
+        this.optimizationRuns.set(placeholder.id, real)
+        this.evictOldRuns()
+      } catch (err) {
+        const failed: OptimizationRun = {
+          ...placeholder,
+          status: 'failed',
+          error: (err as Error).message,
+          finishedAt: new Date().toISOString(),
+        }
+        this.optimizationRuns.set(placeholder.id, failed)
+      }
+    })()
+
+    return placeholder
+  }
+
+  getOptimizationRun(runId: string): OptimizationRun | undefined {
+    return this.optimizationRuns.get(runId)
+  }
+
+  listOptimizationRuns(): OptimizationRun[] {
+    return [...this.optimizationRuns.values()].sort((a, b) =>
+      b.startedAt.localeCompare(a.startedAt),
+    )
+  }
+
+  private evictOldRuns(): void {
+    const MAX_RUNS = 32
+    if (this.optimizationRuns.size <= MAX_RUNS) return
+    const sorted = [...this.optimizationRuns.entries()].sort((a, b) =>
+      a[1].startedAt.localeCompare(b[1].startedAt),
+    )
+    while (sorted.length > MAX_RUNS) {
+      const [oldId] = sorted.shift()!
+      this.optimizationRuns.delete(oldId)
+    }
   }
 
   /** Access the shared BudgetManager (for dashboards / admin endpoints). */
