@@ -1,3 +1,15 @@
+// Load .env files (project root + packages/web) before anything else so
+// LLM provider env vars (DASHSCOPE_API_KEY, EVOLVING_AGENT_PROVIDER, …)
+// are visible to SessionManager during init. Uses the Node 20.6+ built-in
+// loader — no third-party dependency. Missing files are ignored.
+for (const candidate of ['.env', '../.env', '../../.env']) {
+  try {
+    process.loadEnvFile(candidate)
+  } catch {
+    // Best-effort — file may not exist.
+  }
+}
+
 import { serve } from '@hono/node-server'
 import { cors as _cors } from 'hono/cors' // re-exported via build-app indirectly; kept for type ergonomics
 import { resolve, dirname } from 'node:path'
