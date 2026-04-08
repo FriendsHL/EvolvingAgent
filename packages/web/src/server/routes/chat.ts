@@ -1,6 +1,15 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { Agent, LLMProvider, PROVIDER_PRESETS, type PresetName, MetricsCollector, type SessionManager } from '@evolving-agent/core'
+import {
+  Agent,
+  LLMProvider,
+  PROVIDER_PRESETS,
+  type PresetName,
+  MetricsCollector,
+  type SessionManager,
+  type Session,
+  type PromptConfig,
+} from '@evolving-agent/core'
 import type { AgentRegistry } from '../services/agent-registry.js'
 import type { SessionStore, PersistedSession } from '../services/session-store.js'
 
@@ -36,6 +45,160 @@ export function chatRoutes(
     return streamSSE(c, async (stream) => {
       try {
         for await (const event of session.streamMessage(body.message)) {
+          switch (event.type) {
+            case 'status':
+              await stream.writeSSE({ data: JSON.stringify({ type: 'status', content: event.message }) })
+              break
+            case 'text-delta':
+              await stream.writeSSE({ data: JSON.stringify({ type: 'text-delta', content: event.text }) })
+              break
+            case 'tool-call':
+              await stream.writeSSE({ data: JSON.stringify({ type: 'tool-call', step: event.step }) })
+              break
+            case 'done':
+              await sessionManager.persistSession(session)
+              await stream.writeSSE({
+                data: JSON.stringify({
+                  type: 'message',
+                  content: event.response,
+                  experienceId: event.experienceId,
+                }),
+              })
+              await stream.writeSSE({
+                data: JSON.stringify({
+                  type: 'metrics',
+                  totalCost: event.metrics.cost,
+                  totalTokens: event.metrics.tokens,
+                }),
+              })
+              break
+          }
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        await stream.writeSSE({ data: JSON.stringify({ type: 'error', content: errMsg }) })
+      }
+      await stream.writeSSE({ data: JSON.stringify({ type: 'done' }) })
+    })
+  })
+
+  // ============================================================
+  // D3a — Prompt preview
+  // ============================================================
+  //
+  // Renders the exact messages array that the conversational executor
+  // would send to the LLM if the user submitted `message` right now,
+  // *without* actually executing it. Returns the same shape that
+  // `LLMProvider.buildMessages()` produces, plus a few summary fields
+  // so the dashboard can show layer breakdown.
+  //
+  // NOTE: this is the conversational view (system = `conversational`
+  // prompt, no skills, no retrieved experiences). The planner / tool
+  // execution paths assemble the prompt differently — surfacing those
+  // is a follow-up if it turns out to matter.
+  app.post('/preview', async (c) => {
+    if (!sessionManager) {
+      return c.json({ error: 'SessionManager not configured' }, 500)
+    }
+    const body = await c.req.json<{ message: string; sessionId?: string }>()
+    if (typeof body.message !== 'string') {
+      return c.json({ error: 'message is required' }, 400)
+    }
+    const targetId = body.sessionId ?? 'default'
+    const session =
+      (await sessionManager.getOrLoad(targetId)) ??
+      (await sessionManager.create({ id: targetId }))
+
+    const provider = session.agent.getLLMProvider()
+    const promptRegistry = sessionManager.getPromptRegistry()
+    const config: PromptConfig = {
+      systemPrompt: promptRegistry.get('conversational'),
+      skills: [],
+      history: session.getHistory(),
+      experiences: [],
+      currentInput: body.message,
+      provider: provider.getProviderType(),
+    }
+    const messages = provider.buildMessages(config)
+
+    // Strip Anthropic cache control wrappers from the wire response so
+    // the client gets a plain {role, content} array.
+    const plainMessages = messages.map((m) => {
+      const content = typeof m.content === 'string'
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content
+              .map((p) => (typeof p === 'object' && p && 'text' in p ? String((p as { text: unknown }).text) : ''))
+              .join('')
+          : ''
+      return { role: m.role, content }
+    })
+    const totalChars = plainMessages.reduce((acc, m) => acc + m.content.length, 0)
+
+    return c.json({
+      messages: plainMessages,
+      totalChars,
+      historyTurns: config.history.length,
+      provider: provider.getProviderType(),
+      model: provider.getModelId('executor'),
+      view: 'conversational',
+    })
+  })
+
+  // ============================================================
+  // D3b — Message editing (truncate-and-replay)
+  // ============================================================
+  //
+  // Edit a previous user message: truncate the conversation to just
+  // before that message, replace it with `newContent`, and re-run the
+  // turn (streaming the new assistant response). Everything after the
+  // edit point — including the old assistant reply — is discarded.
+  //
+  // This is the "linear edit" model (no branching). Branching is the
+  // separate D3c effort and requires schema changes.
+  app.post('/edit', async (c) => {
+    if (!sessionManager) {
+      return c.json({ error: 'SessionManager not configured' }, 500)
+    }
+    const body = await c.req.json<{
+      sessionId: string
+      messageIndex: number
+      newContent: string
+    }>()
+
+    if (!body.sessionId || typeof body.sessionId !== 'string') {
+      return c.json({ error: 'sessionId is required' }, 400)
+    }
+    if (typeof body.messageIndex !== 'number' || body.messageIndex < 0) {
+      return c.json({ error: 'messageIndex must be a non-negative number' }, 400)
+    }
+    if (typeof body.newContent !== 'string' || body.newContent.trim().length === 0) {
+      return c.json({ error: 'newContent must be a non-empty string' }, 400)
+    }
+
+    const session = await sessionManager.getOrLoad(body.sessionId)
+    if (!session) return c.json({ error: 'Session not found' }, 404)
+
+    const messages = session.getMessages()
+    if (body.messageIndex >= messages.length) {
+      return c.json(
+        { error: `messageIndex out of range (have ${messages.length} messages)` },
+        400,
+      )
+    }
+    if (messages[body.messageIndex].role !== 'user') {
+      return c.json({ error: 'Can only edit user messages' }, 400)
+    }
+
+    // Truncate short-term memory to everything strictly BEFORE the edited
+    // message. The new userContent is then sent through the normal turn,
+    // which appends it + the new assistant reply.
+    const truncated = messages.slice(0, body.messageIndex)
+    session.loadHistory(truncated)
+
+    return streamSSE(c, async (stream) => {
+      try {
+        for await (const event of session.streamMessage(body.newContent)) {
           switch (event.type) {
             case 'status':
               await stream.writeSSE({ data: JSON.stringify({ type: 'status', content: event.message }) })

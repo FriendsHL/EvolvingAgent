@@ -215,6 +215,57 @@ describe('smoke — core read paths', () => {
     expect(newId).toBeTruthy()
   })
 
+  it('POST /api/chat/preview returns rendered conversational messages', async () => {
+    const r = await postJson(h.app, '/api/chat/preview', { message: 'hello world' })
+    expect(r.status).toBe(200)
+    const body = r.body as {
+      messages: Array<{ role: string; content: string }>
+      totalChars: number
+      historyTurns: number
+      view: string
+    }
+    expect(Array.isArray(body.messages)).toBe(true)
+    // Conversational view: at minimum a system message + the current user input.
+    expect(body.messages.length).toBeGreaterThanOrEqual(2)
+    expect(body.messages[0].role).toBe('system')
+    expect(body.messages[body.messages.length - 1].role).toBe('user')
+    expect(body.messages[body.messages.length - 1].content).toContain('hello world')
+    expect(body.historyTurns).toBe(0) // empty session
+    expect(body.totalChars).toBeGreaterThan(0)
+    expect(body.view).toBe('conversational')
+  })
+
+  it('POST /api/chat/edit rejects bad input with 400/404', async () => {
+    // Missing sessionId → 400
+    const r1 = await postJson(h.app, '/api/chat/edit', { messageIndex: 0, newContent: 'x' })
+    expect(r1.status).toBe(400)
+
+    // Empty newContent → 400
+    const r2 = await postJson(h.app, '/api/chat/edit', {
+      sessionId: 'default',
+      messageIndex: 0,
+      newContent: '   ',
+    })
+    expect(r2.status).toBe(400)
+
+    // Unknown session → 404
+    const r3 = await postJson(h.app, '/api/chat/edit', {
+      sessionId: 'no-such-session',
+      messageIndex: 0,
+      newContent: 'hi',
+    })
+    expect(r3.status).toBe(404)
+
+    // messageIndex out of range on the empty default session → 400
+    const r4 = await postJson(h.app, '/api/chat/edit', {
+      sessionId: 'default',
+      messageIndex: 0,
+      newContent: 'hi',
+    })
+    expect(r4.status).toBe(400)
+    expect((r4.body as { error: string }).error).toContain('out of range')
+  })
+
   it('GET /api/metrics/cache returns recent + daily series', async () => {
     const r = await getJson(h.app, '/api/metrics/cache?days=3')
     expect(r.status).toBe(200)

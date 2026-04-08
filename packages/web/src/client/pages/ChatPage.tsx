@@ -19,6 +19,15 @@ interface HistoryMessage {
   timestamp: string
 }
 
+interface PreviewResponse {
+  messages: Array<{ role: string; content: string }>
+  totalChars: number
+  historyTurns: number
+  provider: string
+  model: string
+  view: string
+}
+
 export default function ChatPage() {
   const navigate = useNavigate()
   const { sessionId: routeSessionId } = useParams<{ sessionId?: string }>()
@@ -33,6 +42,16 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false)
   const [statusText, setStatusText] = useState('')
   const [streamingContent, setStreamingContent] = useState('')
+
+  // D3a — prompt preview modal
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewData, setPreviewData] = useState<PreviewResponse | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+
+  // D3b — message editing
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState('')
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -159,6 +178,97 @@ export default function ChatPage() {
     }
   }
 
+  // Common SSE event-pump used by both `sendMessage` (POST /api/chat/)
+  // and `applyEdit` (POST /api/chat/edit). Both endpoints emit the same
+  // event vocabulary, so the parsing loop is identical.
+  const pumpStream = async (res: Response) => {
+    let streamingStarted = false
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const event = JSON.parse(line.slice(6))
+          if (event.type === 'status') {
+            setStatusText(event.content)
+          } else if (event.type === 'text-delta') {
+            if (!streamingStarted) {
+              streamingStarted = true
+              setStatusText('')
+              setMessages((prev) => [
+                ...prev,
+                { role: 'assistant', content: '', timestamp: new Date().toISOString() },
+              ])
+            }
+            setStreamingContent((prev) => prev + event.content)
+            setMessages((prev) => {
+              const updated = [...prev]
+              const last = updated[updated.length - 1]
+              if (last && last.role === 'assistant') {
+                updated[updated.length - 1] = { ...last, content: last.content + event.content }
+              }
+              return updated
+            })
+          } else if (event.type === 'tool-call') {
+            const step = event.step
+            const status = step?.result?.success ? 'OK' : 'FAIL'
+            setStatusText(`Tool: ${step?.tool ?? step?.description ?? 'tool'} [${status}]`)
+          } else if (event.type === 'message') {
+            if (streamingStarted) {
+              setMessages((prev) => {
+                const updated = [...prev]
+                const last = updated[updated.length - 1]
+                if (last && last.role === 'assistant') {
+                  updated[updated.length - 1] = {
+                    ...last,
+                    content: event.content,
+                    experienceId: event.experienceId,
+                  }
+                }
+                return updated
+              })
+            } else {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  role: 'assistant',
+                  content: event.content,
+                  timestamp: new Date().toISOString(),
+                  experienceId: event.experienceId,
+                },
+              ])
+            }
+          } else if (event.type === 'error') {
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: 'system',
+                content: `Error: ${event.content}`,
+                timestamp: new Date().toISOString(),
+              },
+            ])
+          } else if (event.type === 'done') {
+            setStatusText('')
+            setStreamingContent('')
+          }
+        } catch {
+          /* skip parse errors */
+        }
+      }
+    }
+  }
+
   const sendMessage = async () => {
     if (!input.trim() || sending) return
     const userMsg = input.trim()
@@ -172,7 +282,6 @@ export default function ChatPage() {
 
     setStatusText('')
     setStreamingContent('')
-    let streamingStarted = false
 
     try {
       const res = await fetch(`/api/chat/`, {
@@ -183,96 +292,7 @@ export default function ChatPage() {
           sessionId: activeSessionId ?? undefined,
         }),
       })
-
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const event = JSON.parse(line.slice(6))
-            if (event.type === 'status') {
-              setStatusText(event.content)
-            } else if (event.type === 'text-delta') {
-              if (!streamingStarted) {
-                streamingStarted = true
-                setStatusText('')
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: '',
-                    timestamp: new Date().toISOString(),
-                  },
-                ])
-              }
-              setStreamingContent((prev) => prev + event.content)
-              setMessages((prev) => {
-                const updated = [...prev]
-                const last = updated[updated.length - 1]
-                if (last && last.role === 'assistant') {
-                  updated[updated.length - 1] = { ...last, content: last.content + event.content }
-                }
-                return updated
-              })
-            } else if (event.type === 'tool-call') {
-              const step = event.step
-              const status = step?.result?.success ? 'OK' : 'FAIL'
-              setStatusText(`Tool: ${step?.tool ?? step?.description ?? 'tool'} [${status}]`)
-            } else if (event.type === 'message') {
-              if (streamingStarted) {
-                setMessages((prev) => {
-                  const updated = [...prev]
-                  const last = updated[updated.length - 1]
-                  if (last && last.role === 'assistant') {
-                    updated[updated.length - 1] = {
-                      ...last,
-                      content: event.content,
-                      experienceId: event.experienceId,
-                    }
-                  }
-                  return updated
-                })
-              } else {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: event.content,
-                    timestamp: new Date().toISOString(),
-                    experienceId: event.experienceId,
-                  },
-                ])
-              }
-            } else if (event.type === 'error') {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  role: 'system',
-                  content: `Error: ${event.content}`,
-                  timestamp: new Date().toISOString(),
-                },
-              ])
-            } else if (event.type === 'done') {
-              setStatusText('')
-              setStreamingContent('')
-            }
-          } catch {
-            /* skip parse errors */
-          }
-        }
-      }
+      await pumpStream(res)
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -287,7 +307,97 @@ export default function ChatPage() {
     setStatusText('')
     setStreamingContent('')
     setSending(false)
-    // Refresh the sessions list so messageCount + lastActiveAt update.
+    refreshSessions()
+  }
+
+  // ----------------------------------------------------------------
+  // D3a — Prompt preview
+  // ----------------------------------------------------------------
+  const openPreview = async () => {
+    if (!input.trim()) return
+    setPreviewOpen(true)
+    setPreviewLoading(true)
+    setPreviewError(null)
+    setPreviewData(null)
+    try {
+      const res = await fetch('/api/chat/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: input.trim(),
+          sessionId: activeSessionId ?? undefined,
+        }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = (await res.json()) as PreviewResponse
+      setPreviewData(data)
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // D3b — Edit a previous user message and re-run from there
+  // ----------------------------------------------------------------
+  const startEdit = (index: number) => {
+    if (sending) return
+    const msg = messages[index]
+    if (!msg || msg.role !== 'user') return
+    setEditingIndex(index)
+    setEditDraft(msg.content)
+  }
+
+  const cancelEdit = () => {
+    setEditingIndex(null)
+    setEditDraft('')
+  }
+
+  const applyEdit = async () => {
+    if (editingIndex === null || !activeSessionId) return
+    const newContent = editDraft.trim()
+    if (!newContent) return
+    const targetIndex = editingIndex
+
+    setSending(true)
+    setEditingIndex(null)
+    setEditDraft('')
+    setStatusText('')
+    setStreamingContent('')
+
+    // Locally truncate to before the edited message and append the new
+    // user message — matches the server-side truncate-and-replay.
+    setMessages((prev) => [
+      ...prev.slice(0, targetIndex),
+      { role: 'user', content: newContent, timestamp: new Date().toISOString() },
+    ])
+
+    try {
+      const res = await fetch('/api/chat/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: activeSessionId,
+          messageIndex: targetIndex,
+          newContent,
+        }),
+      })
+      await pumpStream(res)
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'system',
+          content: `Edit failed: ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: new Date().toISOString(),
+        },
+      ])
+    }
+
+    setStatusText('')
+    setStreamingContent('')
+    setSending(false)
     refreshSessions()
   }
 
@@ -367,19 +477,61 @@ export default function ChatPage() {
             </div>
           )}
           {messages.map((msg, i) => (
-            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group`}>
               <div className="max-w-[75%] flex flex-col items-start gap-1">
-                <div
-                  className={`rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
-                    msg.role === 'user'
-                      ? 'bg-blue-600 text-white self-end'
-                      : msg.role === 'system'
-                        ? 'bg-gray-100 text-gray-500 text-xs italic'
-                        : 'bg-gray-100 text-gray-800'
-                  }`}
-                >
-                  {msg.content}
-                </div>
+                {editingIndex === i ? (
+                  <div className="flex flex-col gap-2 w-full">
+                    <textarea
+                      value={editDraft}
+                      onChange={(e) => setEditDraft(e.target.value)}
+                      rows={3}
+                      className="border border-blue-400 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none w-[28rem] max-w-full"
+                      autoFocus
+                    />
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        type="button"
+                        onClick={cancelEdit}
+                        className="text-xs px-3 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={applyEdit}
+                        disabled={!editDraft.trim() || sending}
+                        className="text-xs px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        Save & re-run
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-1.5 self-end">
+                    {msg.role === 'user' && (
+                      <button
+                        type="button"
+                        onClick={() => startEdit(i)}
+                        disabled={sending}
+                        title="Edit this message and re-run from here"
+                        className="opacity-0 group-hover:opacity-100 text-xs text-gray-400 hover:text-blue-600 px-1 disabled:opacity-0 transition-opacity self-center"
+                      >
+                        ✏️
+                      </button>
+                    )}
+                    <div
+                      className={`rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
+                        msg.role === 'user'
+                          ? 'bg-blue-600 text-white'
+                          : msg.role === 'system'
+                            ? 'bg-gray-100 text-gray-500 text-xs italic'
+                            : 'bg-gray-100 text-gray-800'
+                      }`}
+                    >
+                      {msg.content}
+                    </div>
+                  </div>
+                )}
                 {msg.role === 'assistant' && msg.experienceId && (
                   <div className="flex items-center gap-1.5 pl-1">
                     <button
@@ -453,6 +605,14 @@ export default function ChatPage() {
             disabled={sending}
           />
           <button
+            onClick={openPreview}
+            disabled={sending || !input.trim()}
+            title="Preview the assembled prompt without sending"
+            className="bg-white border border-gray-300 text-gray-700 px-4 rounded-xl hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+          >
+            Preview
+          </button>
+          <button
             onClick={sendMessage}
             disabled={sending || !input.trim()}
             className="bg-blue-600 text-white px-6 rounded-xl hover:bg-blue-700 disabled:opacity-50 text-sm font-medium"
@@ -461,6 +621,74 @@ export default function ChatPage() {
           </button>
         </div>
       </div>
+
+      {/* D3a — Prompt preview modal */}
+      {previewOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"
+          onClick={() => setPreviewOpen(false)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3">
+              <div>
+                <h2 className="text-base font-semibold text-gray-800">Prompt preview</h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Conversational view — what {previewData?.provider ?? '...'} ({previewData?.model ?? '...'}) will see
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewOpen(false)}
+                className="text-gray-400 hover:text-gray-600 text-xl leading-none px-2"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-3">
+              {previewLoading && <div className="text-sm text-gray-400">Loading…</div>}
+              {previewError && (
+                <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-3">
+                  {previewError}
+                </div>
+              )}
+              {previewData?.messages.map((m, idx) => (
+                <div key={idx} className="border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 border-b border-gray-200">
+                    <span
+                      className={`text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded ${
+                        m.role === 'system'
+                          ? 'bg-purple-100 text-purple-700'
+                          : m.role === 'user'
+                            ? 'bg-blue-100 text-blue-700'
+                            : 'bg-green-100 text-green-700'
+                      }`}
+                    >
+                      {m.role}
+                    </span>
+                    <span className="text-[10px] text-gray-400">{m.content.length} chars</span>
+                  </div>
+                  <pre className="p-3 text-xs text-gray-700 whitespace-pre-wrap break-words font-mono max-h-64 overflow-y-auto">
+                    {m.content}
+                  </pre>
+                </div>
+              ))}
+            </div>
+            {previewData && (
+              <div className="border-t border-gray-200 px-5 py-3 flex items-center justify-between text-xs text-gray-500">
+                <div>
+                  {previewData.messages.length} messages · {previewData.totalChars.toLocaleString()} chars · {previewData.historyTurns} history turns
+                </div>
+                <div>
+                  {previewData.provider} / {previewData.model}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
