@@ -13,6 +13,7 @@ import ChatPage from './pages/ChatPage.js'
 import ToolsPage from './pages/ToolsPage.js'
 import MCPPage from './pages/MCPPage.js'
 import PromptsPage from './pages/PromptsPage.js'
+import OptimizationPage from './pages/OptimizationPage.js'
 import EventStreamPage from './pages/EventStreamPage.js'
 import CoordinatePage from './pages/CoordinatePage.js'
 import SettingsPage from './pages/SettingsPage.js'
@@ -32,6 +33,7 @@ export default function App() {
         <Route path="/tools" element={<ToolsPage />} />
         <Route path="/mcp" element={<MCPPage />} />
         <Route path="/prompts" element={<PromptsPage />} />
+        <Route path="/ops" element={<OptimizationPage />} />
         <Route path="/events" element={<EventStreamPage />} />
         <Route path="/coordinate" element={<CoordinatePage />} />
         <Route path="/memory" element={<MemoryPage />} />

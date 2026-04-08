@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { path: '/tools', label: 'Tools', icon: '🔧' },
   { path: '/mcp', label: 'MCP', icon: '🔌' },
   { path: '/prompts', label: 'Prompts', icon: '✏️' },
+  { path: '/ops', label: 'Optimization', icon: '🚀' },
   { path: '/coordinate', label: 'Coordinate', icon: '🔄' },
   { path: '/memory', label: 'Memory', icon: '🧠' },
   { path: '/hooks', label: 'Hooks', icon: '🔗' },
