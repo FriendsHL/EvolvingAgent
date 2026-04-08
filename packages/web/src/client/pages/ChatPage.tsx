@@ -1,9 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client.js'
 import SessionList, { type SessionMetadata } from '../components/SessionList.js'
-import MarkdownMessage from '../components/shared/MarkdownMessage.js'
 import { useT } from '../i18n/index.js'
+
+// Lazy-loaded: react-markdown + remark-gfm are ~180 KB; keep them out of the main bundle.
+const MarkdownMessage = lazy(() => import('../components/shared/MarkdownMessage.js'))
 
 interface ToolCallSummary {
   tool: string
@@ -644,7 +646,11 @@ export default function ChatPage() {
                       }`}
                     >
                       {msg.role === 'assistant'
-                        ? <MarkdownMessage content={msg.content} />
+                        ? (
+                          <Suspense fallback={<div className="whitespace-pre-wrap">{msg.content}</div>}>
+                            <MarkdownMessage content={msg.content} />
+                          </Suspense>
+                        )
                         : msg.content}
                     </div>
                   </div>
