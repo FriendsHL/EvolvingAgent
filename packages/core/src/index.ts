@@ -142,6 +142,29 @@ export type {
   SystemNoticeEvent,
 } from './channels/index.js'
 
+// Feishu Channel (Phase 4 / A stage)
+export {
+  FeishuChannel,
+  FeishuDedup,
+  createFeishuClient,
+  buildTextContent,
+  replyText,
+  sendText,
+  parseFeishuMessageEvent,
+  buildFeishuConversationId,
+  verifyFeishuSignature,
+  decryptFeishuPayload,
+} from './channels/feishu/index.js'
+export type {
+  FeishuCredentials,
+  FeishuChannelOptions,
+  FeishuInboundMessage,
+  FeishuWebhookHeaders,
+  FeishuVerifyResult,
+  FeishuInboundOutcome,
+  FeishuParseOptions,
+} from './channels/feishu/index.js'
+
 // Prompt self-optimization (Phase 4 / C stage)
 export { PromptRegistry } from './prompts/registry.js'
 export type { PromptRegistryOptions } from './prompts/registry.js'
