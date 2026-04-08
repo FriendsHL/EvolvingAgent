@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client.js'
 import SessionList, { type SessionMetadata } from '../components/SessionList.js'
+import { useT } from '../i18n/index.js'
 
 interface Message {
   role: 'user' | 'assistant' | 'system'
@@ -30,6 +31,7 @@ interface PreviewResponse {
 
 export default function ChatPage() {
   const navigate = useNavigate()
+  const t = useT()
   const { sessionId: routeSessionId } = useParams<{ sessionId?: string }>()
 
   const [sessions, setSessions] = useState<SessionMetadata[]>([])
@@ -456,11 +458,11 @@ export default function ChatPage() {
         <div className="flex items-center justify-between mb-3 bg-white rounded-lg border border-gray-200 px-4 py-2">
           <div className="flex items-center gap-3 min-w-0">
             <span className="text-sm font-medium truncate">
-              {activeSession?.title ?? 'Chat'}
+              {activeSession?.title ?? t('chat.title')}
             </span>
             {activeSession && (
               <span className="text-xs text-gray-400">
-                {activeSession.messageCount} messages
+                {t('chat.messages', undefined, { count: activeSession.messageCount })}
               </span>
             )}
           </div>
@@ -469,11 +471,11 @@ export default function ChatPage() {
         {/* Messages */}
         <div className="flex-1 overflow-y-auto bg-white rounded-xl border border-gray-200 p-4 space-y-3">
           {historyLoading && (
-            <div className="text-xs text-gray-400">Loading history…</div>
+            <div className="text-xs text-gray-400">{t('chat.loadingHistory')}</div>
           )}
           {!historyLoading && messages.length === 0 && (
             <div className="text-center text-sm text-gray-400 mt-12">
-              No messages yet. Start the conversation below.
+              {t('chat.empty')}
             </div>
           )}
           {messages.map((msg, i) => (
@@ -494,7 +496,7 @@ export default function ChatPage() {
                         onClick={cancelEdit}
                         className="text-xs px-3 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
                       >
-                        Cancel
+                        {t('common.cancel')}
                       </button>
                       <button
                         type="button"
@@ -502,7 +504,7 @@ export default function ChatPage() {
                         disabled={!editDraft.trim() || sending}
                         className="text-xs px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                       >
-                        Save & re-run
+                        {t('chat.edit.save')}
                       </button>
                     </div>
                   </div>
@@ -513,7 +515,7 @@ export default function ChatPage() {
                         type="button"
                         onClick={() => startEdit(i)}
                         disabled={sending}
-                        title="Edit this message and re-run from here"
+                        title={t('chat.edit.tooltip')}
                         className="opacity-0 group-hover:opacity-100 text-xs text-gray-400 hover:text-blue-600 px-1 disabled:opacity-0 transition-opacity self-center"
                       >
                         ✏️
@@ -538,7 +540,7 @@ export default function ChatPage() {
                       type="button"
                       disabled={msg.feedback !== undefined}
                       onClick={() => submitFeedback(i, msg.experienceId!, 'positive')}
-                      title="Helpful"
+                      title={t('chat.feedback.helpful')}
                       className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
                         msg.feedback === 'positive'
                           ? 'bg-green-50 border-green-300 text-green-700'
@@ -553,7 +555,7 @@ export default function ChatPage() {
                       type="button"
                       disabled={msg.feedback !== undefined}
                       onClick={() => submitFeedback(i, msg.experienceId!, 'negative')}
-                      title="Not helpful"
+                      title={t('chat.feedback.notHelpful')}
                       className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
                         msg.feedback === 'negative'
                           ? 'bg-red-50 border-red-300 text-red-700'
@@ -565,7 +567,7 @@ export default function ChatPage() {
                       {'\u{1F44E}'}
                     </button>
                     {msg.feedback && (
-                      <span className="text-[10px] text-gray-400 ml-1">Thanks for the feedback</span>
+                      <span className="text-[10px] text-gray-400 ml-1">{t('chat.feedback.thanks')}</span>
                     )}
                   </div>
                 )}
@@ -599,7 +601,7 @@ export default function ChatPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
+            placeholder={t('chat.input.placeholder')}
             rows={2}
             className="flex-1 border border-gray-300 rounded-xl px-4 py-2.5 text-sm resize-none focus:outline-none focus:border-blue-400"
             disabled={sending}
@@ -607,17 +609,17 @@ export default function ChatPage() {
           <button
             onClick={openPreview}
             disabled={sending || !input.trim()}
-            title="Preview the assembled prompt without sending"
+            title={t('chat.preview')}
             className="bg-white border border-gray-300 text-gray-700 px-4 rounded-xl hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
           >
-            Preview
+            {t('chat.preview')}
           </button>
           <button
             onClick={sendMessage}
             disabled={sending || !input.trim()}
             className="bg-blue-600 text-white px-6 rounded-xl hover:bg-blue-700 disabled:opacity-50 text-sm font-medium"
           >
-            Send
+            {t('common.send')}
           </button>
         </div>
       </div>
@@ -634,9 +636,12 @@ export default function ChatPage() {
           >
             <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3">
               <div>
-                <h2 className="text-base font-semibold text-gray-800">Prompt preview</h2>
+                <h2 className="text-base font-semibold text-gray-800">{t('chat.preview.title')}</h2>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Conversational view — what {previewData?.provider ?? '...'} ({previewData?.model ?? '...'}) will see
+                  {t('chat.preview.subtitle', undefined, {
+                    provider: previewData?.provider ?? '...',
+                    model: previewData?.model ?? '...',
+                  })}
                 </p>
               </div>
               <button
@@ -648,7 +653,7 @@ export default function ChatPage() {
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-5 space-y-3">
-              {previewLoading && <div className="text-sm text-gray-400">Loading…</div>}
+              {previewLoading && <div className="text-sm text-gray-400">{t('chat.preview.empty')}</div>}
               {previewError && (
                 <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-3">
                   {previewError}
@@ -679,7 +684,11 @@ export default function ChatPage() {
             {previewData && (
               <div className="border-t border-gray-200 px-5 py-3 flex items-center justify-between text-xs text-gray-500">
                 <div>
-                  {previewData.messages.length} messages · {previewData.totalChars.toLocaleString()} chars · {previewData.historyTurns} history turns
+                  {t('chat.preview.footer', undefined, {
+                    count: previewData.messages.length,
+                    chars: previewData.totalChars.toLocaleString(),
+                    turns: previewData.historyTurns,
+                  })}
                 </div>
                 <div>
                   {previewData.provider} / {previewData.model}

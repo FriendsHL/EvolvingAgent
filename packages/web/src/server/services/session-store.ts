@@ -28,9 +28,26 @@ export class SessionStore {
     const files = await readdir(this.dir).catch(() => [])
     for (const file of files) {
       if (!file.endsWith('.json')) continue
+      // Skip the SessionManager-owned index.json that lives in the same
+      // directory but has a completely different shape.
+      if (file === 'index.json') continue
       try {
         const data = await readFile(join(this.dir, file), 'utf-8')
-        const session = JSON.parse(data) as PersistedSession
+        const parsed = JSON.parse(data) as unknown
+        // Defensive: only accept entries that look like a PersistedSession.
+        // Without this, a foreign-shape file (e.g. an array, or a
+        // SessionManager record) silently poisons the in-memory map and
+        // crashes the dashboard reduce loops downstream.
+        if (
+          !parsed ||
+          typeof parsed !== 'object' ||
+          Array.isArray(parsed) ||
+          !Array.isArray((parsed as PersistedSession).messages) ||
+          typeof (parsed as PersistedSession).id !== 'string'
+        ) {
+          continue
+        }
+        const session = parsed as PersistedSession
         this.sessions.set(session.id, session)
       } catch { /* skip corrupted */ }
     }

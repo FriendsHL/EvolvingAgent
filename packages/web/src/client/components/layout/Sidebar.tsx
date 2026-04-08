@@ -1,28 +1,30 @@
 import { NavLink } from 'react-router-dom'
+import { useT } from '../../i18n/index.js'
 
-const NAV_ITEMS = [
-  { path: '/chat', label: 'Chat', icon: '💬' },
-  { path: '/events', label: 'Events', icon: '📡' },
-  { path: '/dashboard', label: 'Dashboard', icon: '📊' },
-  { path: '/agents', label: 'Agents', icon: '🤖' },
-  { path: '/sessions', label: 'Sessions', icon: '🕐' },
-  { path: '/skills', label: 'Skills', icon: '⚡' },
-  { path: '/tools', label: 'Tools', icon: '🔧' },
-  { path: '/mcp', label: 'MCP', icon: '🔌' },
-  { path: '/prompts', label: 'Prompts', icon: '✏️' },
-  { path: '/ops', label: 'Optimization', icon: '🚀' },
-  { path: '/coordinate', label: 'Coordinate', icon: '🔄' },
-  { path: '/memory', label: 'Memory', icon: '🧠' },
-  { path: '/hooks', label: 'Hooks', icon: '🔗' },
-  { path: '/metrics', label: 'Metrics', icon: '📈' },
+const NAV_ITEMS: Array<{ path: string; key: string; icon: string }> = [
+  { path: '/chat', key: 'sidebar.chat', icon: '💬' },
+  { path: '/events', key: 'sidebar.events', icon: '📡' },
+  { path: '/dashboard', key: 'sidebar.dashboard', icon: '📊' },
+  { path: '/agents', key: 'sidebar.agents', icon: '🤖' },
+  { path: '/sessions', key: 'sidebar.sessions', icon: '🕐' },
+  { path: '/skills', key: 'sidebar.skills', icon: '⚡' },
+  { path: '/tools', key: 'sidebar.tools', icon: '🔧' },
+  { path: '/mcp', key: 'sidebar.mcp', icon: '🔌' },
+  { path: '/prompts', key: 'sidebar.prompts', icon: '✏️' },
+  { path: '/ops', key: 'sidebar.optimization', icon: '🚀' },
+  { path: '/coordinate', key: 'sidebar.coordinate', icon: '🔄' },
+  { path: '/memory', key: 'sidebar.memory', icon: '🧠' },
+  { path: '/hooks', key: 'sidebar.hooks', icon: '🔗' },
+  { path: '/metrics', key: 'sidebar.metrics', icon: '📈' },
 ]
 
 export default function Sidebar() {
+  const t = useT()
   return (
     <aside className="w-56 bg-gray-900 text-gray-300 flex flex-col min-h-screen">
       <div className="p-4 border-b border-gray-700">
-        <h1 className="text-lg font-bold text-white">Evolving Agent</h1>
-        <p className="text-xs text-gray-500 mt-1">Admin Dashboard</p>
+        <h1 className="text-lg font-bold text-white">{t('sidebar.brand')}</h1>
+        <p className="text-xs text-gray-500 mt-1">{t('sidebar.subtitle')}</p>
       </div>
       <nav className="flex-1 p-2">
         {NAV_ITEMS.map((item) => (
@@ -38,7 +40,7 @@ export default function Sidebar() {
             }
           >
             <span>{item.icon}</span>
-            <span>{item.label}</span>
+            <span>{t(item.key)}</span>
           </NavLink>
         ))}
       </nav>
@@ -54,7 +56,7 @@ export default function Sidebar() {
           }
         >
           <span>⚙️</span>
-          <span>Settings</span>
+          <span>{t('sidebar.settings')}</span>
         </NavLink>
       </div>
     </aside>

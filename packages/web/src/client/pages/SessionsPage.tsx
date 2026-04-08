@@ -2,71 +2,66 @@ import { useNavigate } from 'react-router-dom'
 import { useApi } from '../hooks/useApi.js'
 import { apiGet } from '../api/client.js'
 import DataTable, { type Column } from '../components/shared/DataTable.js'
-import StatusBadge from '../components/shared/StatusBadge.js'
+import { useT } from '../i18n/index.js'
 
-interface SessionSummary {
+// Mirrors SessionMetadata returned by GET /api/sessions (SessionManager).
+// Phase 3 collapsed the legacy PersistedSession shape; the dashboard table
+// now shows metadata fields only and clicks deep-link into the chat view.
+interface SessionMeta {
   id: string
-  status: string
-  startedAt: string
-  closedAt?: string
-  totalCost: number
-  totalTokens: number
-  agentId?: string
+  title: string
+  createdAt: number
+  lastActiveAt: number
   messageCount: number
   [key: string]: unknown
 }
 
 export default function SessionsPage() {
   const navigate = useNavigate()
-  const { data } = useApi<{ sessions: SessionSummary[] }>(() => apiGet('/sessions'))
+  const t = useT()
+  const { data } = useApi<{ sessions: SessionMeta[] }>(() => apiGet('/sessions'))
   const sessions = data?.sessions ?? []
 
-  const columns: Column<SessionSummary>[] = [
+  const columns: Column<SessionMeta>[] = [
+    {
+      key: 'title',
+      label: t('sessions.col.title'),
+      render: (row) => <span className="font-medium">{row.title || t('sessions.untitled')}</span>,
+    },
     {
       key: 'id',
-      label: 'Session',
-      render: (row) => <span className="font-mono text-xs">{row.id.slice(0, 12)}...</span>,
+      label: t('sessions.col.id'),
+      render: (row) => <span className="font-mono text-xs text-gray-500">{row.id.slice(0, 12)}…</span>,
     },
     {
-      key: 'status',
-      label: 'Status',
-      render: (row) => <StatusBadge status={row.status} />,
-    },
-    {
-      key: 'startedAt',
-      label: 'Started',
+      key: 'createdAt',
+      label: t('sessions.col.created'),
       sortable: true,
-      render: (row) => new Date(row.startedAt).toLocaleString(),
+      render: (row) => new Date(row.createdAt).toLocaleString(),
+    },
+    {
+      key: 'lastActiveAt',
+      label: t('sessions.col.lastActive'),
+      sortable: true,
+      render: (row) => new Date(row.lastActiveAt).toLocaleString(),
     },
     {
       key: 'messageCount',
-      label: 'Messages',
+      label: t('sessions.col.messages'),
       sortable: true,
-    },
-    {
-      key: 'totalTokens',
-      label: 'Tokens',
-      sortable: true,
-      render: (row) => row.totalTokens.toLocaleString(),
-    },
-    {
-      key: 'totalCost',
-      label: 'Cost',
-      sortable: true,
-      render: (row) => `$${row.totalCost.toFixed(4)}`,
     },
   ]
 
   return (
     <div>
-      <h2 className="text-xl font-semibold mb-6">Sessions</h2>
+      <h2 className="text-xl font-semibold mb-6">{t('sessions.title')}</h2>
       <div className="bg-white rounded-xl border border-gray-200">
-        <DataTable<SessionSummary>
+        <DataTable<SessionMeta>
           columns={columns}
           data={sessions}
           keyField="id"
-          onRowClick={(row) => navigate(`/sessions/${row.id}`)}
-          emptyMessage="No sessions recorded yet"
+          onRowClick={(row) => navigate(`/chat/${row.id}`)}
+          emptyMessage={t('sessions.empty')}
         />
       </div>
     </div>
