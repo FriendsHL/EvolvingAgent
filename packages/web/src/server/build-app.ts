@@ -76,7 +76,7 @@ export function buildApp(deps: BuildAppDeps): Hono {
   )
 
   app.route('/api/dashboard', dashboardRoutes(metrics, sessionStore, agentRegistry))
-  app.route('/api/metrics', metricsRoutes(metrics))
+  app.route('/api/metrics', metricsRoutes(metrics, sessionManager))
   // Mount distill BEFORE the broader /api/memory so Hono picks the more
   // specific prefix first.
   app.route('/api/memory/distill', distillRoutes(sessionManager))

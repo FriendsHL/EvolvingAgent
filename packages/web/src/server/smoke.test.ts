@@ -215,6 +215,47 @@ describe('smoke — core read paths', () => {
     expect(newId).toBeTruthy()
   })
 
+  it('GET /api/metrics/cache returns recent + daily series', async () => {
+    const r = await getJson(h.app, '/api/metrics/cache?days=3')
+    expect(r.status).toBe(200)
+    const body = r.body as {
+      recent: { totalCalls: number }
+      daily: Array<{ date: string; aggregate: { totalCalls: number } }>
+      windowMs: number
+      days: number
+    }
+    expect(body.recent).toBeTypeOf('object')
+    expect(Array.isArray(body.daily)).toBe(true)
+    expect(body.daily.length).toBe(3)
+    expect(body.days).toBe(3)
+    // Empty data dir → all-zero aggregates, but the shape must be there.
+    expect(body.recent.totalCalls).toBe(0)
+  })
+
+  it('GET /api/metrics/cache/recent returns ring buffer (empty for fresh dir)', async () => {
+    const r = await getJson(h.app, '/api/metrics/cache/recent?limit=10')
+    expect(r.status).toBe(200)
+    const body = r.body as { calls: unknown[] }
+    expect(Array.isArray(body.calls)).toBe(true)
+    expect(body.calls.length).toBe(0)
+  })
+
+  it('GET /api/metrics/budget returns three-layer snapshot', async () => {
+    const r = await getJson(h.app, '/api/metrics/budget')
+    expect(r.status).toBe(200)
+    const body = r.body as {
+      config: { global: { perSession: number; perDay: number } }
+      today: { date: string; tokens: number }
+      daily: Record<string, number>
+      sessionTotals: Record<string, number>
+    }
+    expect(body.config.global.perSession).toBeGreaterThan(0)
+    expect(body.today.date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(body.today.tokens).toBe(0)
+    expect(body.daily).toBeTypeOf('object')
+    expect(body.sessionTotals).toBeTypeOf('object')
+  })
+
   it('GET /api/memory/experiences returns a list (possibly empty)', async () => {
     const r = await getJson(h.app, '/api/memory/experiences')
     expect(r.status).toBe(200)

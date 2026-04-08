@@ -302,6 +302,34 @@ export class BudgetManager {
   }
 
   /**
+   * Snapshot of the live budget state for dashboards / `/api/metrics/budget`.
+   * Returns deep copies so external callers can't mutate internal maps.
+   *
+   * - `daily` covers up to {@link DAILY_RETENTION_DAYS} keyed by YYYY-MM-DD.
+   * - `sessionTotals` is process-lifetime in-memory only — empty after restart.
+   * - `mainTaskTotals` / `subAgentTaskTotals` are alive only while the task is
+   *   running (cleared on `clearMainTask` / `clearSubAgentTask`).
+   */
+  getStatus(): {
+    config: BudgetConfig
+    today: { date: string; tokens: number }
+    daily: Record<string, number>
+    sessionTotals: Record<string, number>
+    mainTaskTotals: Record<string, number>
+    subAgentTaskTotals: Record<string, number>
+  } {
+    const date = todayKey()
+    return {
+      config: cloneBudgetConfig(this.config),
+      today: { date, tokens: this.daily[date] ?? 0 },
+      daily: { ...this.daily },
+      sessionTotals: Object.fromEntries(this.sessionTotals),
+      mainTaskTotals: Object.fromEntries(this.mainTaskTotals),
+      subAgentTaskTotals: Object.fromEntries(this.subAgentTaskTotals),
+    }
+  }
+
+  /**
    * Returns a deep clone of the current effective config so external callers
    * (REST endpoints, dashboards) cannot mutate the live config in place.
    */

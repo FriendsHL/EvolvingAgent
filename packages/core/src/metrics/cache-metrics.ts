@@ -143,6 +143,27 @@ export class CacheMetricsRecorder {
     return { ...EMPTY_AGGREGATE }
   }
 
+  /**
+   * Daily aggregates for every YYYY-MM-DD between `start` and `end` inclusive.
+   * Days with no recorded calls are returned as the empty aggregate so
+   * dashboard charts get a continuous time series with no gaps.
+   *
+   * Both bounds are ISO date strings (YYYY-MM-DD). If start > end the result
+   * is an empty array.
+   */
+  getDailySummaryRange(start: string, end: string): Array<{ date: string; aggregate: CacheAggregate }> {
+    const out: Array<{ date: string; aggregate: CacheAggregate }> = []
+    const startTs = Date.parse(start + 'T00:00:00Z')
+    const endTs = Date.parse(end + 'T00:00:00Z')
+    if (Number.isNaN(startTs) || Number.isNaN(endTs) || startTs > endTs) return out
+    for (let ts = startTs; ts <= endTs; ts += 86_400_000) {
+      const date = new Date(ts).toISOString().slice(0, 10)
+      const agg = this.dailySummary.get(date)
+      out.push({ date, aggregate: agg ? { ...agg } : { ...EMPTY_AGGREGATE } })
+    }
+    return out
+  }
+
   aggregateRecent(windowMs: number): CacheAggregate {
     const cutoff = Date.now() - windowMs
     return this.aggregateRing((r) => r.ts >= cutoff)
