@@ -21,8 +21,10 @@ import { configRoutes } from './routes/config.js'
 import { mcpRoutes } from './routes/mcp.js'
 import { promptsRoutes } from './routes/prompts.js'
 import { distillRoutes } from './routes/distill.js'
+import { feishuRoutes } from './routes/feishu.js'
 import { AgentRegistry } from './services/agent-registry.js'
 import { SessionStore } from './services/session-store.js'
+import { bootstrapFeishuChannel } from './services/feishu-bootstrap.js'
 
 const PORT = Number(process.env.EA_WEB_PORT ?? 3721)
 const DATA_PATH = resolve(process.env.EA_DATA_PATH ?? 'data/memory')
@@ -41,6 +43,13 @@ async function main() {
   await agentRegistry.init()
   await sessionStore.init()
   await sessionManager.init()
+
+  // Phase 4 / A2 — bootstrap Feishu channel if credentials are present.
+  // Returns null silently when not configured; never throws.
+  const { channel: feishuChannel } = await bootstrapFeishuChannel({
+    dataPath: DATA_PATH,
+    sessionManager,
+  })
 
   // Auto-create a "default" session for legacy clients that don't pass sessionId.
   if (!sessionManager.list().some((s) => s.id === 'default')) {
@@ -71,6 +80,7 @@ async function main() {
   app.route('/api/config', configRoutes(sessionManager))
   app.route('/api/mcp', mcpRoutes(sessionManager, DATA_PATH))
   app.route('/api/prompts', promptsRoutes(sessionManager))
+  app.route('/api/channels/feishu', feishuRoutes({ channel: feishuChannel }))
 
   // SSE: Server-Sent Events for real-time agent events
   const sseClients = new Set<ReadableStreamDefaultController>()
