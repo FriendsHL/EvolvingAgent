@@ -45,6 +45,7 @@ Respond with a JSON object:
 IMPORTANT:
 - Prefer skills over raw tools when a matching skill exists — skills handle complex multi-step workflows automatically.
 - For example, use "skill:web-search" instead of manually composing browser goto + text extraction steps.
+- If the user pastes a URL or asks about "this page / this site / this article", ALWAYS plan a tool step — use "skill:summarize-url" for content extraction, or "browser" with action "goto"+"text" for interactive inspection. Do not answer conversationally about URLs you have not fetched.
 - If the task is a simple conversation (greeting, question, etc.) that doesn't require tools, return an empty steps array.
 - Keep plans concise — prefer fewer, well-defined steps over many small ones.
 - Only use tools and skills that are listed as available. If the task requires capabilities you don't have, say so honestly instead of trying to use unavailable tools.`

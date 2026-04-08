@@ -129,8 +129,18 @@ async function getAllToolsWithHealth(): Promise<SystemTool[]> {
     actions: ['get', 'post', 'put', 'delete'],
   })
 
-  // 5. Browser tool — needs playwright + chromium
+  // 5. Browser tool — needs playwright + chromium.
+  // checkBrowserHealth() actually launches a headless chromium, so it is the
+  // single source of truth: if it passes, both playwright and the browser
+  // binary are definitively usable. Fall back to the brittle regex probes
+  // only when health fails, so users see *why*.
   const browserHealth = await checkBrowserHealth()
+  const dependencies = browserHealth.available
+    ? [
+        { name: 'playwright', installed: true },
+        { name: 'chromium', installed: true },
+      ]
+    : [checkDep('playwright'), checkChromium()]
   tools.push({
     id: 'browser',
     name: 'Browser',
@@ -139,10 +149,7 @@ async function getAllToolsWithHealth(): Promise<SystemTool[]> {
     status: browserHealth.available ? 'ready' : 'unavailable',
     error: browserHealth.error,
     actions: ['goto', 'click', 'type', 'text', 'screenshot', 'evaluate', 'wait', 'back', 'html'],
-    dependencies: [
-      checkDep('playwright'),
-      checkChromium(),
-    ],
+    dependencies,
     setupCommand: 'npx playwright install chromium',
   })
 

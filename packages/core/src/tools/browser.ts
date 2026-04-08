@@ -96,7 +96,10 @@ export const browserTool: Tool = {
 
   async execute(params): Promise<ToolResult> {
     const action = params.action as string
-    const timeout = (params.timeout as number) ?? 10000
+    // Default 30s: modern SPA sites routinely take >10s on first load; the
+    // old 10s default produced spurious "timeout" errors against slow / geo-
+    // restricted sites (e.g. x.com from intranets).
+    const timeout = (params.timeout as number) ?? 30000
 
     try {
       const page = await getPage()
@@ -105,7 +108,18 @@ export const browserTool: Tool = {
         case 'goto': {
           const url = params.url as string
           if (!url) return { success: false, output: '', error: 'url is required for goto' }
-          const response = await page.goto(url, { timeout, waitUntil: 'domcontentloaded' })
+          // Two-stage wait: try 'load' first for full resources, fall back to
+          // 'domcontentloaded' if a site streams indefinitely (common on SPA).
+          let response: Awaited<ReturnType<typeof page.goto>>
+          try {
+            response = await page.goto(url, { timeout, waitUntil: 'load' })
+          } catch (err) {
+            if ((err as Error).message.includes('Timeout')) {
+              response = await page.goto(url, { timeout, waitUntil: 'domcontentloaded' })
+            } else {
+              throw err
+            }
+          }
           const title = await page.title()
           return {
             success: true,
