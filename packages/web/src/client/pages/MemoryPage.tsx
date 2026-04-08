@@ -4,6 +4,9 @@ import { useApi } from '../hooks/useApi.js'
 import { apiGet, apiPost } from '../api/client.js'
 import StatusBadge from '../components/shared/StatusBadge.js'
 import SummaryCard from '../components/shared/SummaryCard.js'
+import DistillationPanel from '../components/memory/DistillationPanel.js'
+
+type MemoryTab = 'experiences' | 'distillation'
 
 interface Experience {
   id: string
@@ -24,6 +27,7 @@ interface PoolStats {
 
 export default function MemoryPage() {
   const navigate = useNavigate()
+  const [tab, setTab] = useState<MemoryTab>('experiences')
   const [pool, setPool] = useState('all')
   const [result, setResult] = useState('')
   const [search, setSearch] = useState('')
@@ -49,16 +53,77 @@ export default function MemoryPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-semibold">Memory</h2>
-        <button
-          onClick={handleMaintain}
-          className="bg-gray-100 hover:bg-gray-200 text-sm px-3 py-1.5 rounded-lg transition-colors"
-        >
-          Run Maintenance
-        </button>
+        {tab === 'experiences' && (
+          <button
+            onClick={handleMaintain}
+            className="bg-gray-100 hover:bg-gray-200 text-sm px-3 py-1.5 rounded-lg transition-colors"
+          >
+            Run Maintenance
+          </button>
+        )}
       </div>
 
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-gray-200 mb-6">
+        {(['experiences', 'distillation'] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              tab === t
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {t === 'experiences' ? 'Experiences' : 'Distillation'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'distillation' ? (
+        <DistillationPanel />
+      ) : (
+        <ExperiencesView
+          statsData={statsData}
+          experiences={experiences}
+          search={search}
+          setSearch={setSearch}
+          pool={pool}
+          setPool={setPool}
+          result={result}
+          setResult={setResult}
+          onNavigate={(id) => navigate(`/memory/${id}`)}
+        />
+      )}
+    </div>
+  )
+}
+
+function ExperiencesView({
+  statsData,
+  experiences,
+  search,
+  setSearch,
+  pool,
+  setPool,
+  result,
+  setResult,
+  onNavigate,
+}: {
+  statsData: PoolStats | null
+  experiences: Experience[]
+  search: string
+  setSearch: (s: string) => void
+  pool: string
+  setPool: (s: string) => void
+  result: string
+  setResult: (s: string) => void
+  onNavigate: (id: string) => void
+}) {
+  return (
+    <div>
       {/* Pool Stats */}
       {statsData && (
         <div className="grid grid-cols-3 gap-4 mb-6">
@@ -98,7 +163,7 @@ export default function MemoryPage() {
         {experiences.map((exp) => (
           <div
             key={exp.id}
-            onClick={() => navigate(`/memory/${exp.id}`)}
+            onClick={() => onNavigate(exp.id)}
             className="bg-white rounded-xl border border-gray-200 p-4 cursor-pointer hover:border-blue-300 transition-colors"
           >
             <div className="flex items-start justify-between">
