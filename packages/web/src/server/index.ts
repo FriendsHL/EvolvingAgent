@@ -20,6 +20,7 @@ import { coordinateRoutes } from './routes/coordinate.js'
 import { configRoutes } from './routes/config.js'
 import { mcpRoutes } from './routes/mcp.js'
 import { promptsRoutes } from './routes/prompts.js'
+import { distillRoutes } from './routes/distill.js'
 import { AgentRegistry } from './services/agent-registry.js'
 import { SessionStore } from './services/session-store.js'
 
@@ -57,6 +58,9 @@ async function main() {
   // API routes
   app.route('/api/dashboard', dashboardRoutes(metrics, sessionStore, agentRegistry))
   app.route('/api/metrics', metricsRoutes(metrics))
+  // Mount distill BEFORE the broader /api/memory so Hono picks the more
+  // specific prefix first.
+  app.route('/api/memory/distill', distillRoutes(sessionManager))
   app.route('/api/memory', memoryRoutes(DATA_PATH))
   app.route('/api/hooks', hooksRoutes())
   app.route('/api/skills', skillsRoutes(skillRegistry))
