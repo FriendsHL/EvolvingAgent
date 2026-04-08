@@ -33,7 +33,6 @@ import {
   FeishuChannel,
   MetricsCollector,
   SessionManager,
-  SkillRegistry,
 } from '@evolving-agent/core'
 
 import { buildApp } from './build-app.js'
@@ -56,7 +55,6 @@ async function makeHarness(opts: { withFeishu?: { encryptKey?: string } } = {}):
   const dataPath = await mkdtemp(join(tmpdir(), 'ea-smoke-'))
 
   const metrics = new MetricsCollector(dataPath)
-  const skillRegistry = new SkillRegistry(dataPath)
   const agentRegistry = new AgentRegistry(dataPath)
   const sessionStore = new SessionStore(dataPath)
   const sessionManager = new SessionManager({
@@ -67,7 +65,6 @@ async function makeHarness(opts: { withFeishu?: { encryptKey?: string } } = {}):
   })
 
   await metrics.init()
-  await skillRegistry.init()
   await agentRegistry.init()
   await sessionStore.init()
   await sessionManager.init()
@@ -93,7 +90,6 @@ async function makeHarness(opts: { withFeishu?: { encryptKey?: string } } = {}):
   const app = buildApp({
     dataPath,
     metrics,
-    skillRegistry,
     agentRegistry,
     sessionStore,
     sessionManager,
@@ -244,13 +240,12 @@ describe('smoke — core read paths', () => {
     expect(r.body).toBeDefined()
   })
 
-  // TECH DEBT: /api/prompts/runs is currently shadowed by /:id (registered
-  // first). Hono picks the first match and parsePromptId('runs') returns
-  // 400. Asserting the current (buggy) behavior so we notice if the route
-  // ordering ever changes — track via the runs UI surface, not this test.
-  it('GET /api/prompts/runs is currently shadowed by /:id (returns 400)', async () => {
+  it('GET /api/prompts/runs returns empty optimization runs', async () => {
     const r = await getJson(h.app, '/api/prompts/runs')
-    expect(r.status).toBe(400)
+    expect(r.status).toBe(200)
+    const body = r.body as { runs: unknown[] }
+    expect(Array.isArray(body.runs)).toBe(true)
+    expect(body.runs.length).toBe(0)
   })
 
   it('GET /api/mcp/config returns empty server list when no config', async () => {
@@ -275,24 +270,20 @@ describe('smoke — core read paths', () => {
     expect(r.status).toBe(200)
   })
 
-  // TECH DEBT: skillsRoutes is wired to a fresh SkillRegistry created at the
-  // server-index level, NOT the SessionManager's internal one that has the
-  // 8 built-in skills registered. So this endpoint returns an empty list
-  // unless the operator has persisted custom skills to disk. The smoke
-  // test asserts shape only — surfacing the empty-by-default state.
-  it('GET /api/skills returns the (currently empty) skill list', async () => {
+  it('GET /api/skills returns the SessionManager built-in skills', async () => {
     const r = await getJson(h.app, '/api/skills')
     expect(r.status).toBe(200)
     const body = r.body as { skills?: unknown[] } | unknown[]
     const arr = Array.isArray(body) ? body : (body.skills ?? [])
-    expect(Array.isArray(arr)).toBe(true)
+    expect((arr as unknown[]).length).toBeGreaterThanOrEqual(8)
   })
 
-  // The tools route runs `npx playwright install --dry-run` synchronously
-  // to detect chromium availability. That can take 10-30s on a clean
-  // machine, so this test gets a generous timeout.
+  // The tools route invokes `npx playwright install --dry-run` and
+  // checkBrowserHealth() on the first call (slow — up to ~30s on a clean
+  // machine), then memoises the result for 60s. The first GET below pays
+  // that cost; the second is essentially free.
   it(
-    'GET /api/tools returns tool list (slow — invokes playwright dry-run)',
+    'GET /api/tools returns tool list (first call hits playwright dry-run)',
     async () => {
       const r = await getJson(h.app, '/api/tools')
       expect(r.status).toBe(200)
@@ -302,6 +293,16 @@ describe('smoke — core read paths', () => {
     },
     60_000,
   )
+
+  it('GET /api/tools second call hits the in-memory TTL cache (fast)', async () => {
+    const t0 = Date.now()
+    const r = await getJson(h.app, '/api/tools')
+    const elapsed = Date.now() - t0
+    expect(r.status).toBe(200)
+    // Cache hit should be sub-100ms even on slow CI. Generous bound to
+    // avoid flakiness — the point is "much less than the dry-run cost".
+    expect(elapsed).toBeLessThan(500)
+  })
 })
 
 // ============================================================

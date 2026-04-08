@@ -48,6 +48,37 @@ export function promptsRoutes(manager: SessionManager) {
   })
 
   // ============================================================
+  // GET /runs — list recent runs
+  //
+  // IMPORTANT: this must be registered BEFORE `/:id`, otherwise Hono's
+  // first-match wins routing treats `runs` as a prompt id and the request
+  // hits the 400-on-unknown-id branch below.
+  // ============================================================
+  app.get('/runs', (c) => {
+    const runs = manager.listOptimizationRuns().map((r) => ({
+      id: r.id,
+      targetId: r.targetId,
+      status: r.status,
+      startedAt: r.startedAt,
+      finishedAt: r.finishedAt,
+      candidateCount: r.candidateCount,
+      acceptedCount: r.gateResult?.accepted.length ?? 0,
+      rejectedCount: r.gateResult?.rejected.length ?? 0,
+      error: r.error,
+    }))
+    return c.json({ runs })
+  })
+
+  // GET /runs/:runId — full run with candidate text. Same ordering reason
+  // as `/runs` above.
+  app.get('/runs/:runId', (c) => {
+    const runId = c.req.param('runId')
+    const run = manager.getOptimizationRun(runId)
+    if (!run) return c.json({ error: 'Run not found' }, 404)
+    return c.json({ run })
+  })
+
+  // ============================================================
   // GET /:id — fetch one prompt with full content
   // ============================================================
   app.get('/:id', (c) => {
@@ -112,34 +143,6 @@ export function promptsRoutes(manager: SessionManager) {
         500,
       )
     }
-  })
-
-  // ============================================================
-  // GET /runs — list recent runs
-  // ============================================================
-  app.get('/runs', (c) => {
-    const runs = manager.listOptimizationRuns().map((r) => ({
-      id: r.id,
-      targetId: r.targetId,
-      status: r.status,
-      startedAt: r.startedAt,
-      finishedAt: r.finishedAt,
-      candidateCount: r.candidateCount,
-      acceptedCount: r.gateResult?.accepted.length ?? 0,
-      rejectedCount: r.gateResult?.rejected.length ?? 0,
-      error: r.error,
-    }))
-    return c.json({ runs })
-  })
-
-  // ============================================================
-  // GET /runs/:runId — full run with candidate text
-  // ============================================================
-  app.get('/runs/:runId', (c) => {
-    const runId = c.req.param('runId')
-    const run = manager.getOptimizationRun(runId)
-    if (!run) return c.json({ error: 'Run not found' }, 404)
-    return c.json({ run })
   })
 
   // ============================================================

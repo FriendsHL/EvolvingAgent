@@ -14,19 +14,39 @@ interface SystemTool {
   setupCommand?: string
 }
 
+// Process-level TTL cache for the tool list. Recomputing it triggers
+// `npx playwright install --dry-run` (which can take 2-30s on a clean
+// machine) plus `checkBrowserHealth()`, so we cache for 60s to keep
+// dashboard reads cheap. The setup endpoint invalidates this when it
+// successfully installs a dependency.
+let toolsCache: { tools: SystemTool[]; expiresAt: number } | null = null
+const TOOLS_CACHE_TTL_MS = 60_000
+
+async function getCachedTools(): Promise<SystemTool[]> {
+  const now = Date.now()
+  if (toolsCache && toolsCache.expiresAt > now) return toolsCache.tools
+  const tools = await getAllToolsWithHealth()
+  toolsCache = { tools, expiresAt: now + TOOLS_CACHE_TTL_MS }
+  return tools
+}
+
+function invalidateToolsCache(): void {
+  toolsCache = null
+}
+
 export function toolsRoutes() {
   const app = new Hono()
 
   // List all system tools with health
   app.get('/', async (c) => {
-    const tools = await getAllToolsWithHealth()
+    const tools = await getCachedTools()
     return c.json({ tools })
   })
 
   // Check health of a specific tool
   app.get('/:id/health', async (c) => {
     const id = c.req.param('id')
-    const tools = await getAllToolsWithHealth()
+    const tools = await getCachedTools()
     const tool = tools.find((t) => t.id === id)
     if (!tool) return c.json({ error: 'Tool not found' }, 404)
     return c.json(tool)
@@ -51,6 +71,9 @@ export function toolsRoutes() {
       })
       // Reset cached state so the tool can be used immediately
       if (id === 'browser') resetBrowserState()
+      // Invalidate the tool-list cache so the next GET reflects the new
+      // installed/ready status without waiting for the TTL.
+      invalidateToolsCache()
       return c.json({ success: true, output })
     } catch (err) {
       return c.json({

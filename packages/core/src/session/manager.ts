@@ -354,6 +354,16 @@ export class SessionManager {
     return this.channels
   }
 
+  /**
+   * Access the shared SkillRegistry — the one with the 8 built-in skills
+   * pre-registered. Web routes should always use this rather than
+   * constructing a fresh SkillRegistry, otherwise the dashboard's skill
+   * list silently drops the built-ins.
+   */
+  getSkills(): SkillRegistry {
+    return this.skills
+  }
+
   /** Materialize the shared deps as the type Agent expects. */
   private buildSharedDeps(): AgentSharedDeps {
     return {

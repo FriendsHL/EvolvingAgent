@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 
-import { MetricsCollector, SkillRegistry, SessionManager } from '@evolving-agent/core'
+import { MetricsCollector, SessionManager } from '@evolving-agent/core'
 import { AgentRegistry } from './services/agent-registry.js'
 import { SessionStore } from './services/session-store.js'
 import { bootstrapFeishuChannel } from './services/feishu-bootstrap.js'
@@ -17,15 +17,14 @@ const DATA_PATH = resolve(process.env.EA_DATA_PATH ?? 'data/memory')
 
 // Initialize services
 const metrics = new MetricsCollector(DATA_PATH)
-const skillRegistry = new SkillRegistry(DATA_PATH)
 const agentRegistry = new AgentRegistry(DATA_PATH)
 const sessionStore = new SessionStore(DATA_PATH)
 // Phase 3 Batch 3: SessionManager owns shared singletons + per-session Agents.
+// Its internal SkillRegistry is the authoritative one (with built-ins).
 const sessionManager = new SessionManager({ dataPath: DATA_PATH })
 
 async function main() {
   await metrics.init()
-  await skillRegistry.init()
   await agentRegistry.init()
   await sessionStore.init()
   await sessionManager.init()
@@ -63,7 +62,6 @@ async function main() {
   const app = buildApp({
     dataPath: DATA_PATH,
     metrics,
-    skillRegistry,
     agentRegistry,
     sessionStore,
     sessionManager,

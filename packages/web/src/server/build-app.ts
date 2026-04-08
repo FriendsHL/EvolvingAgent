@@ -13,7 +13,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 
-import type { FeishuChannel, MetricsCollector, SessionManager } from '@evolving-agent/core'
+import type { FeishuChannel, MetricsCollector, SessionManager, SkillRegistry } from '@evolving-agent/core'
 
 import { dashboardRoutes } from './routes/dashboard.js'
 import { metricsRoutes } from './routes/metrics.js'
@@ -32,13 +32,18 @@ import { distillRoutes } from './routes/distill.js'
 import { feishuRoutes } from './routes/feishu.js'
 
 import type { AgentRegistry } from './services/agent-registry.js'
-import type { SessionStore, PersistedSession as _PersistedSession } from './services/session-store.js'
-import type { SkillRegistry as _SkillRegistry } from '@evolving-agent/core'
+import type { SessionStore } from './services/session-store.js'
 
 export interface BuildAppDeps {
   dataPath: string
   metrics: MetricsCollector
-  skillRegistry: _SkillRegistry
+  /**
+   * Optional override for the skill registry exposed to /api/skills.
+   * Defaults to `sessionManager.getSkills()` so the dashboard always sees
+   * the built-in skills (the SessionManager-owned registry is the
+   * authoritative one).
+   */
+  skillRegistry?: SkillRegistry
   agentRegistry: AgentRegistry
   sessionStore: SessionStore
   sessionManager: SessionManager
@@ -51,13 +56,16 @@ export function buildApp(deps: BuildAppDeps): Hono {
   const {
     dataPath,
     metrics,
-    skillRegistry,
     agentRegistry,
     sessionStore,
     sessionManager,
     feishuChannel,
     broadcast,
   } = deps
+  // Default to the SessionManager's own SkillRegistry so /api/skills
+  // returns the built-in 8 skills (web-search, summarize-url, self-repair,
+  // github, code-analysis, file-batch, schedule, data-extract).
+  const skillRegistry = deps.skillRegistry ?? sessionManager.getSkills()
 
   const app = new Hono()
 
