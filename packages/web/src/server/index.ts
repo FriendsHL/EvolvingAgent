@@ -25,6 +25,7 @@ import { feishuRoutes } from './routes/feishu.js'
 import { AgentRegistry } from './services/agent-registry.js'
 import { SessionStore } from './services/session-store.js'
 import { bootstrapFeishuChannel } from './services/feishu-bootstrap.js'
+import { createFeishuHandler } from './services/feishu-handler.js'
 
 const PORT = Number(process.env.EA_WEB_PORT ?? 3721)
 const DATA_PATH = resolve(process.env.EA_DATA_PATH ?? 'data/memory')
@@ -50,6 +51,11 @@ async function main() {
     dataPath: DATA_PATH,
     sessionManager,
   })
+  if (feishuChannel) {
+    feishuChannel.onMessage(
+      createFeishuHandler({ channel: feishuChannel, sessionManager }),
+    )
+  }
 
   // Auto-create a "default" session for legacy clients that don't pass sessionId.
   if (!sessionManager.list().some((s) => s.id === 'default')) {
