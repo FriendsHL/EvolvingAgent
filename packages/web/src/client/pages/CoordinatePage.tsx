@@ -161,15 +161,43 @@ export default function CoordinatePage() {
     <div>
       {/* Header */}
       <div className="mb-6">
-        <h2 className="text-xl font-semibold">Multi-Agent Coordination</h2>
+        <h2 className="text-xl font-semibold">多 Agent 协同</h2>
         <p className="text-sm text-gray-500 mt-1">
-          Create agents from templates, delegate tasks, and monitor inter-agent communication.
+          从模板创建专业 Agent 实例,向它们派发任务,并查看 Agent 之间的消息往来。
+        </p>
+      </div>
+
+      {/* Explainer: template vs instance vs main agent */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-xs text-blue-900 mb-6 space-y-1.5">
+        <p>
+          <strong>这个页面是做什么的?</strong>
+          {' '}当你希望把一个复杂任务拆给多个"专业角色"并行或串行处理时,用这里的协同体系。
+          它和"对话"页里的主 Agent 是两套独立的 runtime:
+        </p>
+        <ul className="list-disc pl-5 space-y-0.5">
+          <li>
+            <strong>Agent 模板 (Template)</strong>:一份"角色蓝图",描述能力 / 偏好技能 /
+            推荐 provider。模板本身不会执行任何任务,仅用于创建实例。新增模板需要编辑
+            <code className="mx-1 px-1 bg-white rounded">packages/core/src/multi-agent/templates.ts</code>。
+          </li>
+          <li>
+            <strong>Agent 实例 (Active Agent)</strong>:由模板创建的真实运行体,有 ID、
+            状态(idle/busy/offline),能接收任务并返回结果。实例在进程内存中,重启进程会丢失。
+          </li>
+          <li>
+            <strong>派发任务 (Delegate)</strong>:向协调器提交一段自然语言任务,由协调器拆分并分配给合适的实例,
+            最终在下方消息日志中看到交互过程。
+          </li>
+        </ul>
+        <p className="text-blue-800">
+          ※ 这里的 Agent 与"对话"页的主 Agent(default session) 相互独立,不共享记忆与会话历史。
+          多 Agent 协同仍在 Phase 4 阶段试验中,生产链路默认用的仍然是主 Agent。
         </p>
       </div>
 
       {/* Section A: Agent Templates */}
       <div className="mb-8">
-        <h3 className="text-sm font-medium text-gray-700 mb-3">Agent Templates</h3>
+        <h3 className="text-sm font-medium text-gray-700 mb-3">Agent 模板</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {Object.entries(templates).map(([id, template]) => (
             <div key={id} className="bg-white rounded-xl border border-gray-200 p-4">
@@ -231,12 +259,12 @@ export default function CoordinatePage() {
       {/* Section B: Active Agents */}
       <div className="mb-8">
         <h3 className="text-sm font-medium text-gray-700 mb-3">
-          Active Agents
+          活跃实例
           <span className="ml-2 text-xs text-gray-400">({agents.length})</span>
         </h3>
         {agents.length === 0 ? (
           <div className="text-center text-gray-400 py-8 bg-white rounded-xl border border-gray-200">
-            No agents created yet. Use a template above to create one.
+            还没有任何实例,先从上方模板创建一个。
           </div>
         ) : (
           <div className="space-y-3">
@@ -297,7 +325,7 @@ export default function CoordinatePage() {
 
       {/* Section C: Delegate Task */}
       <div className="mb-8">
-        <h3 className="text-sm font-medium text-gray-700 mb-3">Delegate Task</h3>
+        <h3 className="text-sm font-medium text-gray-700 mb-3">派发任务</h3>
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <div className="space-y-3">
             <textarea
@@ -406,7 +434,7 @@ export default function CoordinatePage() {
       <div>
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-medium text-gray-700">
-            Message Log
+            消息日志
             <span className="ml-2 text-xs text-gray-400">({filteredMessages.length})</span>
           </h3>
           <div className="flex items-center gap-2">
@@ -434,7 +462,7 @@ export default function CoordinatePage() {
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           {filteredMessages.length === 0 ? (
             <div className="text-center text-gray-400 py-8 text-sm">
-              No messages yet. Delegate a task to see inter-agent communication.
+              暂无消息。派发一个任务即可看到 Agent 之间的通信。
             </div>
           ) : (
             <div className="max-h-96 overflow-y-auto divide-y divide-gray-100">

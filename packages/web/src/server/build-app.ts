@@ -75,7 +75,7 @@ export function buildApp(deps: BuildAppDeps): Hono {
     c.json({ status: 'ok', timestamp: new Date().toISOString() }),
   )
 
-  app.route('/api/dashboard', dashboardRoutes(metrics, sessionStore, agentRegistry))
+  app.route('/api/dashboard', dashboardRoutes(metrics, sessionStore, agentRegistry, sessionManager))
   app.route('/api/metrics', metricsRoutes(metrics, sessionManager))
   // Mount distill BEFORE the broader /api/memory so Hono picks the more
   // specific prefix first.
@@ -83,7 +83,7 @@ export function buildApp(deps: BuildAppDeps): Hono {
   app.route('/api/memory', memoryRoutes(dataPath))
   app.route('/api/hooks', hooksRoutes())
   app.route('/api/skills', skillsRoutes(skillRegistry))
-  app.route('/api/agents', agentsRoutes(agentRegistry))
+  app.route('/api/agents', agentsRoutes(agentRegistry, sessionManager))
   app.route('/api/sessions', sessionsRoutes(sessionManager, sessionStore))
   app.route('/api/tools', toolsRoutes())
   app.route('/api/coordinate', coordinateRoutes(dataPath))

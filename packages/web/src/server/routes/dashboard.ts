@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import type { MetricsCollector } from '@evolving-agent/core'
+import type { MetricsCollector, SessionManager } from '@evolving-agent/core'
 import type { SessionStore, PersistedSession } from '../services/session-store.js'
 import type { AgentRegistry } from '../services/agent-registry.js'
 
@@ -7,10 +7,16 @@ export function dashboardRoutes(
   metrics: MetricsCollector,
   sessionStore: SessionStore,
   agentRegistry: AgentRegistry,
+  sessionManager?: SessionManager,
 ) {
   const app = new Hono()
 
   // Overview: per-agent breakdown + global totals
+  //
+  // Primary source of truth is the file-backed MetricsCollector (every chat
+  // turn appends to `metrics/calls/<date>.jsonl`). Session counts come from
+  // the Phase 3 SessionManager when available, falling back to the legacy
+  // SessionStore for backwards compatibility.
   app.get('/summary', async (c) => {
     const agentId = c.req.query('agentId')
     const sessionId = c.req.query('sessionId')
@@ -19,10 +25,27 @@ export function dashboardRoutes(
     if (agentId) sessions = sessions.filter((s) => s.agentId === agentId)
     if (sessionId) sessions = sessions.filter((s) => s.id === sessionId)
 
-    const totalCost = sessions.reduce((s, sess) => s + sess.totalCost, 0)
-    const totalTokens = sessions.reduce((s, sess) => s + sess.totalTokens, 0)
-    const totalMessages = sessions.reduce((s, sess) => s + sess.messages.length, 0)
-    const activeSessions = sessions.filter((s) => s.status === 'active').length
+    const legacyTotalMessages = sessions.reduce((s, sess) => s + sess.messages.length, 0)
+    const legacyActive = sessions.filter((s) => s.status === 'active').length
+
+    // Pull global metrics aggregate (unfiltered — the collector doesn't
+    // currently tag by agentId/sessionId, so filters are a no-op here; the
+    // per-agent breakdown below still uses session-level totals for legacy
+    // data). This gives the top-row numbers real values again.
+    const agg = await metrics.aggregate().catch(() => ({
+      totalCalls: 0,
+      totalPromptTokens: 0,
+      totalCompletionTokens: 0,
+      totalCost: 0,
+      totalSavedCost: 0,
+      avgCacheHitRate: 0,
+    }))
+    const managerSessions = sessionManager?.list() ?? []
+    const totalSessions = Math.max(managerSessions.length, sessions.length)
+    const activeSessions = Math.max(managerSessions.length, legacyActive)
+    const totalCost = agg.totalCost
+    const totalTokens = agg.totalPromptTokens + agg.totalCompletionTokens
+    const totalCalls = agg.totalCalls > 0 ? agg.totalCalls : legacyTotalMessages
 
     // Per-agent breakdown (only when not filtered to single agent)
     const agents = agentRegistry.getAll()
@@ -43,11 +66,11 @@ export function dashboardRoutes(
     return c.json({
       totalCost,
       totalTokens,
-      totalCalls: totalMessages,
-      totalSessions: sessions.length,
+      totalCalls,
+      totalSessions,
       activeSessions,
-      avgCacheHitRate: 0,
-      totalSavedCost: 0,
+      avgCacheHitRate: agg.avgCacheHitRate,
+      totalSavedCost: agg.totalSavedCost,
       agents: agentBreakdown,
     })
   })

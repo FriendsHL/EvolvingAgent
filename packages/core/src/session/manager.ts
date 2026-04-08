@@ -1,5 +1,5 @@
 import { readFile, writeFile, mkdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { nanoid } from 'nanoid'
 
 import { Agent, type AgentSharedDeps } from '../agent.js'
@@ -71,6 +71,12 @@ export interface SessionManagerDeps {
   shared?: Partial<AgentSharedDeps>
   /** Override the default sessions directory (defaults to `<dataPath>/sessions`). */
   sessionsDir?: string
+  /**
+   * Override the default eval cases directory. If omitted we try a sensible
+   * default: when `dataPath` ends with `memory/` we look at a sibling
+   * `../eval/cases` (matches the repo layout), otherwise `<dataPath>/eval/cases`.
+   */
+  evalCasesDir?: string
   /**
    * Tuning + sink for the system-level cache-health-alert cron hook.
    * Omit to use defaults; pass `{ enabled: false }` to disable entirely.
@@ -364,6 +370,11 @@ export class SessionManager {
     return this.skills
   }
 
+  /** Shared ToolRegistry — mirrors {@link getSkills}. */
+  getTools(): ToolRegistry {
+    return this.tools
+  }
+
   /** Materialize the shared deps as the type Agent expects. */
   private buildSharedDeps(): AgentSharedDeps {
     return {
@@ -391,7 +402,11 @@ export class SessionManager {
    */
   async getPromptOptimizer(force = false): Promise<PromptOptimizer> {
     if (this.promptOptimizer && !force) return this.promptOptimizer
-    const casesDir = join(this.deps.dataPath, 'eval', 'cases')
+    const casesDir =
+      this.deps.evalCasesDir ??
+      (basename(this.deps.dataPath) === 'memory'
+        ? join(dirname(this.deps.dataPath), 'eval', 'cases')
+        : join(this.deps.dataPath, 'eval', 'cases'))
     // Stage 2 hard-codes the planner-friendly subset. Stage 3 will let the
     // dashboard pick which case ids to grade against.
     const allCases = await loadEvalCases(casesDir)

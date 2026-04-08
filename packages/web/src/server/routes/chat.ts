@@ -42,6 +42,43 @@ export function chatRoutes(
       (await sessionManager.getOrLoad(targetId)) ??
       (await sessionManager.create({ id: targetId }))
 
+    // Auto-title: if the session still has the default "New chat ..." title
+    // and this is the first user message, derive a short title from the
+    // input (first line, trimmed to 30 chars). Keeps the sidebar scannable.
+    if (
+      session.metadata.title.startsWith('New chat ') &&
+      session.agent.getMemoryManager().shortTerm.length === 0 &&
+      typeof body.message === 'string' &&
+      body.message.trim().length > 0
+    ) {
+      const firstLine = body.message.trim().split('\n')[0].trim()
+      const derived =
+        firstLine.length > 30 ? `${firstLine.slice(0, 30)}…` : firstLine
+      if (derived) {
+        try {
+          await sessionManager.rename(session.metadata.id, derived)
+        } catch {
+          // Non-fatal — keep the default title on failure.
+        }
+      }
+    }
+
+    // Wire agent events into the global SSE broadcast (powers the Event
+    // Stream page). onEvent is idempotent — Agent pushes to a Set, so
+    // re-registering across turns is harmless, but we only register once
+    // per session per process.
+    const sessionLike = session as unknown as { __broadcastWired?: boolean }
+    if (!sessionLike.__broadcastWired) {
+      session.agent.onEvent((event) => {
+        broadcast({ sessionId: session.metadata.id, ...event })
+      })
+      sessionLike.__broadcastWired = true
+    }
+
+    // Snapshot metric count so we can flush only new ones into the
+    // file-backed MetricsCollector after the turn finishes.
+    const metricsBefore = metricsCollector ? session.agent.getMetrics().length : 0
+
     return streamSSE(c, async (stream) => {
       try {
         for await (const event of session.streamMessage(body.message)) {
@@ -57,6 +94,16 @@ export function chatRoutes(
               break
             case 'done':
               await sessionManager.persistSession(session)
+              if (metricsCollector) {
+                const newMetrics = session.agent.getMetrics().slice(metricsBefore)
+                if (newMetrics.length > 0) {
+                  try {
+                    await metricsCollector.recordAll(newMetrics)
+                  } catch (err) {
+                    console.error('[chat] metrics flush failed:', err)
+                  }
+                }
+              }
               await stream.writeSSE({
                 data: JSON.stringify({
                   type: 'message',

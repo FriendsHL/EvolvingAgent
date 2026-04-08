@@ -21,7 +21,7 @@ interface SystemTool {
 }
 
 export default function ToolsPage() {
-  const { data, refetch } = useApi<{ tools: SystemTool[] }>(() => apiGet('/tools'))
+  const { data, loading, error, refetch } = useApi<{ tools: SystemTool[] }>(() => apiGet('/tools'))
   const [installing, setInstalling] = useState<string | null>(null)
   const [installResult, setInstallResult] = useState<{ id: string; success: boolean; message: string } | null>(null)
 
@@ -95,6 +95,18 @@ export default function ToolsPage() {
           <div className="text-xs text-gray-400">Unavailable</div>
         </div>
       </div>
+
+      {loading && (
+        <div className="text-sm text-gray-400 mb-4">Loading tools…</div>
+      )}
+      {error && (
+        <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded">
+          Failed to load tools: {error}
+        </div>
+      )}
+      {!loading && !error && tools.length === 0 && (
+        <div className="text-sm text-gray-400 mb-4">No tools registered.</div>
+      )}
 
       {/* Tool cards */}
       <div className="space-y-3">

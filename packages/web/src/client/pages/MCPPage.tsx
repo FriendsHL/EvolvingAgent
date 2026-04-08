@@ -54,10 +54,30 @@ const EXAMPLE_CONFIG = `{
   "servers": [
     {
       "id": "filesystem",
-      "label": "Filesystem (read-only)",
+      "label": "Filesystem (sandbox /tmp)",
+      "enabled": true,
+      "scope": "both",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-      "scope": "both"
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    {
+      "id": "github",
+      "label": "GitHub",
+      "enabled": false,
+      "scope": "main",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "\${GITHUB_TOKEN}"
+      }
+    },
+    {
+      "id": "fetch",
+      "label": "Fetch (HTTP GET)",
+      "enabled": false,
+      "scope": "both",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"]
     }
   ]
 }`
@@ -220,13 +240,27 @@ function ServersTab() {
           className="w-full font-mono text-xs border rounded px-3 py-2 bg-gray-50"
         />
 
-        <details className="mt-2">
-          <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-700">
-            示例配置
+        <details className="mt-2" open>
+          <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-700 flex items-center gap-2">
+            <span>示例配置（3 个常用 server）</span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault()
+                setConfigText(EXAMPLE_CONFIG)
+              }}
+              className="text-xs bg-white border border-gray-300 text-gray-600 px-2 py-0.5 rounded hover:bg-gray-50"
+            >
+              载入到编辑器
+            </button>
           </summary>
           <pre className="mt-2 bg-gray-50 border rounded p-3 text-xs overflow-x-auto">
             {EXAMPLE_CONFIG}
           </pre>
+          <p className="text-xs text-gray-500 mt-2">
+            GitHub server 需要在 Secrets tab 设置 <code>GITHUB_TOKEN</code>。
+            Filesystem 默认 sandbox 到 /tmp，生产上改成你希望 Agent 能访问的目录。
+          </p>
         </details>
 
         <div className="flex justify-end mt-4">

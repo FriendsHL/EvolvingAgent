@@ -75,6 +75,32 @@ export const en = {
   'settings.budget.title': 'Budget',
   'settings.language.title': 'Language',
   'settings.language.help': 'Choose the dashboard interface language. Saved locally in your browser.',
+
+  // Chat rename
+  'chat.rename.prompt': 'Rename session',
+
+  // Optimization page
+  'optimization.title': 'Optimization Center',
+  'optimization.subtitle': 'Unified view of prompt self-optimization and experience distillation runs. Trigger new runs here; deep-link into the dedicated pages for accept / reject flows.',
+  'optimization.promptRuns': 'Prompt runs',
+  'optimization.distillRuns': 'Distill runs',
+  'optimization.pending': 'Pending acceptance',
+  'optimization.pending.subtitle': 'awaiting review',
+  'optimization.total': 'Total runs',
+  'optimization.stats.subtitle': '{running} running · {completed} done · {failed} failed',
+  'optimization.timeline.title': 'Activity timeline',
+  'optimization.timeline.empty': 'No optimization runs yet. Trigger one above.',
+  'optimization.prompt.title': 'Optimize a prompt',
+  'optimization.prompt.target': 'Target',
+  'optimization.prompt.count': 'Candidates',
+  'optimization.prompt.launch': 'Launch optimization run',
+  'optimization.prompt.launching': 'Launching…',
+  'optimization.distill.title': 'Distill experiences',
+  'optimization.distill.maxInputs': 'Max inputs',
+  'optimization.distill.maxLessons': 'Max lessons',
+  'optimization.distill.launch': 'Run distillation',
+  'optimization.distill.launching': 'Running…',
+  'optimization.help.intro': 'What is this page? You optimize the prompts that drive the main agent (planner / conversational / reflector) and distill past experiences into reusable lessons. Prompts are read from the Prompts page; eval cases live under `data/eval/cases`.',
 } as const
 
 export type TranslationKey = keyof typeof en

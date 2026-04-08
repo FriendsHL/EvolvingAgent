@@ -41,7 +41,19 @@ export default function HooksPage() {
 
   return (
     <div>
-      <h2 className="text-xl font-semibold mb-6">Hooks</h2>
+      <div className="mb-6">
+        <h2 className="text-xl font-semibold">Hooks</h2>
+        <p className="text-xs text-gray-500 mt-1">
+          钩子在特定时机运行（如 <code>before-plan</code>、<code>before-tool-call</code>），
+          用来注入预算检查、安全校验或指标采集。右侧开关可独立启停每个钩子。
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          新增自定义钩子：在 <code>packages/core/src/hooks/core-hooks/</code> 下
+          导出符合 <code>Hook</code> 接口的对象，然后在
+          <code> packages/web/src/server/routes/hooks.ts </code> 里
+          <code> registerAll([...]) </code> 注册后重启即可。上传式自定义钩子在路线图里。
+        </p>
+      </div>
 
       <div className="space-y-3">
         {hooks.length === 0 && (

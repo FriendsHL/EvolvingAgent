@@ -27,13 +27,30 @@ import { buildApp } from './build-app.js'
 const PORT = Number(process.env.EA_WEB_PORT ?? 3721)
 const DATA_PATH = resolve(process.env.EA_DATA_PATH ?? 'data/memory')
 
+// Eval cases live at the repo root (shared across packages). Walk up from
+// CWD to find the first ancestor containing `data/eval/cases`; fall back to
+// env override or `<DATA_PATH>/../eval/cases`.
+function resolveEvalCasesDir(): string {
+  if (process.env.EA_EVAL_CASES_DIR) return resolve(process.env.EA_EVAL_CASES_DIR)
+  let cur = resolve(process.cwd())
+  for (let i = 0; i < 8; i += 1) {
+    const candidate = resolve(cur, 'data', 'eval', 'cases')
+    if (existsSync(candidate)) return candidate
+    const parent = resolve(cur, '..')
+    if (parent === cur) break
+    cur = parent
+  }
+  return resolve(DATA_PATH, '..', 'eval', 'cases')
+}
+const EVAL_CASES_DIR = resolveEvalCasesDir()
+
 // Initialize services
 const metrics = new MetricsCollector(DATA_PATH)
 const agentRegistry = new AgentRegistry(DATA_PATH)
 const sessionStore = new SessionStore(DATA_PATH)
 // Phase 3 Batch 3: SessionManager owns shared singletons + per-session Agents.
 // Its internal SkillRegistry is the authoritative one (with built-ins).
-const sessionManager = new SessionManager({ dataPath: DATA_PATH })
+const sessionManager = new SessionManager({ dataPath: DATA_PATH, evalCasesDir: EVAL_CASES_DIR })
 
 async function main() {
   await metrics.init()

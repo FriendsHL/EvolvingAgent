@@ -2,7 +2,18 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client.js'
 import SessionList, { type SessionMetadata } from '../components/SessionList.js'
+import MarkdownMessage from '../components/shared/MarkdownMessage.js'
 import { useT } from '../i18n/index.js'
+
+interface ToolCallSummary {
+  tool: string
+  description?: string
+  success: boolean
+  durationMs?: number
+  error?: string
+  input?: unknown
+  output?: unknown
+}
 
 interface Message {
   role: 'user' | 'assistant' | 'system'
@@ -12,6 +23,8 @@ interface Message {
   experienceId?: string
   /** Which feedback (if any) the user has submitted for this message. */
   feedback?: 'positive' | 'negative'
+  /** Tool calls the agent issued while producing this message. */
+  toolCalls?: ToolCallSummary[]
 }
 
 interface HistoryMessage {
@@ -223,9 +236,40 @@ export default function ChatPage() {
               return updated
             })
           } else if (event.type === 'tool-call') {
-            const step = event.step
-            const status = step?.result?.success ? 'OK' : 'FAIL'
-            setStatusText(`Tool: ${step?.tool ?? step?.description ?? 'tool'} [${status}]`)
+            const step = event.step ?? {}
+            const call: ToolCallSummary = {
+              tool: String(step.tool ?? step.description ?? 'tool'),
+              description: step.description,
+              success: step?.result?.success !== false,
+              durationMs: typeof step?.result?.durationMs === 'number' ? step.result.durationMs : undefined,
+              error: step?.result?.error,
+              input: step?.input,
+              output: step?.result?.output,
+            }
+            setStatusText(
+              `Tool: ${call.tool} [${call.success ? 'OK' : 'FAIL'}]`,
+            )
+            // Attach to the current streaming assistant message (create a
+            // placeholder if text-delta hasn't arrived yet so the bubble
+            // still renders as tool-first turns).
+            setMessages((prev) => {
+              const updated = [...prev]
+              let last = updated[updated.length - 1]
+              if (!last || last.role !== 'assistant') {
+                updated.push({
+                  role: 'assistant',
+                  content: '',
+                  timestamp: new Date().toISOString(),
+                  toolCalls: [],
+                })
+                last = updated[updated.length - 1]
+              }
+              updated[updated.length - 1] = {
+                ...last,
+                toolCalls: [...(last.toolCalls ?? []), call],
+              }
+              return updated
+            })
           } else if (event.type === 'message') {
             if (streamingStarted) {
               setMessages((prev) => {
@@ -457,9 +501,23 @@ export default function ChatPage() {
         {/* Top bar */}
         <div className="flex items-center justify-between mb-3 bg-white rounded-lg border border-gray-200 px-4 py-2">
           <div className="flex items-center gap-3 min-w-0">
-            <span className="text-sm font-medium truncate">
+            <button
+              type="button"
+              className="text-sm font-medium truncate hover:underline text-left"
+              title={t('chat.edit.tooltip', 'Click to rename')}
+              onClick={() => {
+                if (!activeSession) return
+                const next = window.prompt(
+                  t('chat.rename.prompt', 'Rename session'),
+                  activeSession.title,
+                )
+                if (next && next.trim() && next.trim() !== activeSession.title) {
+                  void handleRename(activeSession.id, next.trim())
+                }
+              }}
+            >
               {activeSession?.title ?? t('chat.title')}
-            </span>
+            </button>
             {activeSession && (
               <span className="text-xs text-gray-400">
                 {t('chat.messages', undefined, { count: activeSession.messageCount })}
@@ -481,6 +539,61 @@ export default function ChatPage() {
           {messages.map((msg, i) => (
             <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group`}>
               <div className="max-w-[75%] flex flex-col items-start gap-1">
+                {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
+                  <div className="w-full flex flex-col gap-1">
+                    {msg.toolCalls.map((call, ci) => (
+                      <details
+                        key={ci}
+                        className={`text-xs rounded-lg border px-2.5 py-1.5 ${
+                          call.success
+                            ? 'border-green-200 bg-green-50 text-green-800'
+                            : 'border-red-200 bg-red-50 text-red-800'
+                        }`}
+                      >
+                        <summary className="cursor-pointer select-none flex items-center gap-2">
+                          <span>{call.success ? '✓' : '✗'}</span>
+                          <span className="font-mono">{call.tool}</span>
+                          {call.description && (
+                            <span className="text-gray-500 truncate">— {call.description}</span>
+                          )}
+                          {typeof call.durationMs === 'number' && (
+                            <span className="text-gray-400 ml-auto">{call.durationMs}ms</span>
+                          )}
+                        </summary>
+                        <div className="mt-1.5 space-y-1 font-mono text-[11px] leading-snug">
+                          {call.input !== undefined && (
+                            <div>
+                              <div className="text-gray-500">input</div>
+                              <pre className="whitespace-pre-wrap break-all bg-white/60 rounded px-1.5 py-1 border border-gray-200">
+                                {typeof call.input === 'string'
+                                  ? call.input
+                                  : JSON.stringify(call.input, null, 2)}
+                              </pre>
+                            </div>
+                          )}
+                          {call.error && (
+                            <div>
+                              <div className="text-red-600">error</div>
+                              <pre className="whitespace-pre-wrap break-all bg-white/60 rounded px-1.5 py-1 border border-red-200">
+                                {call.error}
+                              </pre>
+                            </div>
+                          )}
+                          {call.output !== undefined && call.success && (
+                            <div>
+                              <div className="text-gray-500">output</div>
+                              <pre className="whitespace-pre-wrap break-all bg-white/60 rounded px-1.5 py-1 border border-gray-200 max-h-40 overflow-auto">
+                                {typeof call.output === 'string'
+                                  ? call.output
+                                  : JSON.stringify(call.output, null, 2)}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      </details>
+                    ))}
+                  </div>
+                )}
                 {editingIndex === i ? (
                   <div className="flex flex-col gap-2 w-full">
                     <textarea
@@ -522,15 +635,17 @@ export default function ChatPage() {
                       </button>
                     )}
                     <div
-                      className={`rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
+                      className={`rounded-xl px-4 py-2.5 text-sm ${
                         msg.role === 'user'
-                          ? 'bg-blue-600 text-white'
+                          ? 'bg-blue-600 text-white whitespace-pre-wrap'
                           : msg.role === 'system'
-                            ? 'bg-gray-100 text-gray-500 text-xs italic'
+                            ? 'bg-gray-100 text-gray-500 text-xs italic whitespace-pre-wrap'
                             : 'bg-gray-100 text-gray-800'
                       }`}
                     >
-                      {msg.content}
+                      {msg.role === 'assistant'
+                        ? <MarkdownMessage content={msg.content} />
+                        : msg.content}
                     </div>
                   </div>
                 )}

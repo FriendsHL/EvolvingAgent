@@ -21,6 +21,7 @@ import { Link } from 'react-router-dom'
 import { useApi } from '../hooks/useApi.js'
 import { apiGet, apiPost } from '../api/client.js'
 import SummaryCard from '../components/shared/SummaryCard.js'
+import { useT } from '../i18n/index.js'
 
 // ----------------------------------------------------------------
 // Wire types — mirror server shapes; intentionally not imported from
@@ -66,6 +67,7 @@ type TimelineEntry = {
 const PROMPT_IDS: PromptId[] = ['planner', 'reflector', 'conversational']
 
 export default function OptimizationPage() {
+  const t = useT()
   const { data: promptRunsData, refetch: refetchPrompts } = useApi<{ runs: PromptRunSummary[] }>(
     () => apiGet('/prompts/runs'),
     [],
@@ -125,31 +127,41 @@ export default function OptimizationPage() {
 
   return (
     <div>
-      <h2 className="text-xl font-semibold mb-2">Optimization Center</h2>
-      <p className="text-sm text-gray-500 mb-6">
-        Unified view of prompt self-optimization and experience distillation runs. Trigger
-        new runs here; deep-link into the dedicated pages for accept / reject flows.
+      <h2 className="text-xl font-semibold mb-2">{t('optimization.title')}</h2>
+      <p className="text-sm text-gray-500 mb-3">
+        {t('optimization.subtitle')}
       </p>
+      <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 text-xs text-blue-900 mb-6">
+        {t('optimization.help.intro')}
+      </div>
 
       {/* Status summary */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         <SummaryCard
-          label="Prompt runs"
+          label={t('optimization.promptRuns')}
           value={promptStats.total}
-          subtitle={`${promptStats.running} running · ${promptStats.completed} done · ${promptStats.failed} failed`}
+          subtitle={t('optimization.stats.subtitle', undefined, {
+            running: promptStats.running,
+            completed: promptStats.completed,
+            failed: promptStats.failed,
+          })}
         />
         <SummaryCard
-          label="Distill runs"
+          label={t('optimization.distillRuns')}
           value={distillStats.total}
-          subtitle={`${distillStats.running} running · ${distillStats.completed} done · ${distillStats.failed} failed`}
+          subtitle={t('optimization.stats.subtitle', undefined, {
+            running: distillStats.running,
+            completed: distillStats.completed,
+            failed: distillStats.failed,
+          })}
         />
         <SummaryCard
-          label="Pending acceptance"
+          label={t('optimization.pending')}
           value={countPendingDistill(distillRuns) + countPendingPrompts(promptRuns)}
-          subtitle="awaiting review"
+          subtitle={t('optimization.pending.subtitle')}
         />
         <SummaryCard
-          label="Total runs"
+          label={t('optimization.total')}
           value={promptStats.total + distillStats.total}
         />
       </div>
@@ -163,7 +175,7 @@ export default function OptimizationPage() {
       {/* Merged timeline */}
       <div className="bg-white rounded-xl border border-gray-200">
         <div className="px-5 py-3 border-b border-gray-200 flex justify-between items-center">
-          <h3 className="text-sm font-semibold">Activity timeline</h3>
+          <h3 className="text-sm font-semibold">{t('optimization.timeline.title')}</h3>
           <button
             onClick={() => {
               refetchPrompts()
@@ -171,12 +183,12 @@ export default function OptimizationPage() {
             }}
             className="text-xs text-blue-600 hover:text-blue-800"
           >
-            Refresh
+            {t('common.refresh')}
           </button>
         </div>
         {timeline.length === 0 ? (
           <p className="px-5 py-8 text-sm text-gray-500 text-center">
-            No optimization runs yet. Trigger one above.
+            {t('optimization.timeline.empty')}
           </p>
         ) : (
           <ul className="divide-y divide-gray-100">
@@ -195,6 +207,7 @@ export default function OptimizationPage() {
 // ============================================================
 
 function PromptLauncher({ onLaunched }: { onLaunched: () => void }) {
+  const t = useT()
   const [target, setTarget] = useState<PromptId>('planner')
   const [count, setCount] = useState(3)
   const [busy, setBusy] = useState(false)
@@ -221,10 +234,10 @@ function PromptLauncher({ onLaunched }: { onLaunched: () => void }) {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 className="text-sm font-semibold mb-3">Optimize a prompt</h3>
+      <h3 className="text-sm font-semibold mb-3">{t('optimization.prompt.title')}</h3>
       <div className="flex flex-col gap-2 text-sm">
         <label className="flex items-center gap-2">
-          <span className="text-gray-500 w-16">Target</span>
+          <span className="text-gray-500 w-16">{t('optimization.prompt.target')}</span>
           <select
             value={target}
             onChange={(e) => setTarget(e.target.value as PromptId)}
@@ -236,7 +249,7 @@ function PromptLauncher({ onLaunched }: { onLaunched: () => void }) {
           </select>
         </label>
         <label className="flex items-center gap-2">
-          <span className="text-gray-500 w-16">Candidates</span>
+          <span className="text-gray-500 w-16">{t('optimization.prompt.count')}</span>
           <input
             type="number"
             min={1}
@@ -251,7 +264,7 @@ function PromptLauncher({ onLaunched }: { onLaunched: () => void }) {
           disabled={busy}
           className="bg-blue-600 text-white text-sm rounded-lg px-4 py-2 mt-1 hover:bg-blue-700 disabled:opacity-50"
         >
-          {busy ? 'Launching…' : 'Launch optimization run'}
+          {busy ? t('optimization.prompt.launching') : t('optimization.prompt.launch')}
         </button>
         {msg && <p className="text-xs text-gray-500">{msg}</p>}
       </div>
@@ -264,6 +277,7 @@ function PromptLauncher({ onLaunched }: { onLaunched: () => void }) {
 // ============================================================
 
 function DistillLauncher({ onLaunched }: { onLaunched: () => void }) {
+  const t = useT()
   const [maxInputs, setMaxInputs] = useState(50)
   const [maxLessons, setMaxLessons] = useState(5)
   const [busy, setBusy] = useState(false)
@@ -290,10 +304,10 @@ function DistillLauncher({ onLaunched }: { onLaunched: () => void }) {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 className="text-sm font-semibold mb-3">Distill experiences</h3>
+      <h3 className="text-sm font-semibold mb-3">{t('optimization.distill.title')}</h3>
       <div className="flex flex-col gap-2 text-sm">
         <label className="flex items-center gap-2">
-          <span className="text-gray-500 w-24">Max inputs</span>
+          <span className="text-gray-500 w-24">{t('optimization.distill.maxInputs')}</span>
           <input
             type="number"
             min={1}
@@ -304,7 +318,7 @@ function DistillLauncher({ onLaunched }: { onLaunched: () => void }) {
           />
         </label>
         <label className="flex items-center gap-2">
-          <span className="text-gray-500 w-24">Max lessons</span>
+          <span className="text-gray-500 w-24">{t('optimization.distill.maxLessons')}</span>
           <input
             type="number"
             min={1}
@@ -319,7 +333,7 @@ function DistillLauncher({ onLaunched }: { onLaunched: () => void }) {
           disabled={busy}
           className="bg-blue-600 text-white text-sm rounded-lg px-4 py-2 mt-1 hover:bg-blue-700 disabled:opacity-50"
         >
-          {busy ? 'Distilling…' : 'Run distillation'}
+          {busy ? t('optimization.distill.launching') : t('optimization.distill.launch')}
         </button>
         {msg && <p className="text-xs text-gray-500">{msg}</p>}
       </div>

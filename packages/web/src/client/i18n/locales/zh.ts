@@ -75,4 +75,30 @@ export const zh: Partial<Record<TranslationKey, string>> = {
   'settings.budget.title': '预算',
   'settings.language.title': '语言',
   'settings.language.help': '选择面板的界面语言,设置会保存在浏览器本地。',
+
+  // Chat rename
+  'chat.rename.prompt': '重命名会话',
+
+  // Optimization page
+  'optimization.title': '优化中心',
+  'optimization.subtitle': '集中查看提示词自优化与经验蒸馏。在这里发起新的任务,接受/拒绝结果需要到各自专页。',
+  'optimization.promptRuns': 'Prompt 优化',
+  'optimization.distillRuns': '经验蒸馏',
+  'optimization.pending': '待审核',
+  'optimization.pending.subtitle': '等待人工接受',
+  'optimization.total': '总运行数',
+  'optimization.stats.subtitle': '{running} 进行中 · {completed} 已完成 · {failed} 失败',
+  'optimization.timeline.title': '运行时间线',
+  'optimization.timeline.empty': '还没有任何优化运行,先在上方触发一个。',
+  'optimization.prompt.title': '优化一个 Prompt',
+  'optimization.prompt.target': '目标',
+  'optimization.prompt.count': '候选数',
+  'optimization.prompt.launch': '启动优化运行',
+  'optimization.prompt.launching': '启动中…',
+  'optimization.distill.title': '蒸馏经验',
+  'optimization.distill.maxInputs': '最多样本',
+  'optimization.distill.maxLessons': '最多课程',
+  'optimization.distill.launch': '运行蒸馏',
+  'optimization.distill.launching': '运行中…',
+  'optimization.help.intro': '这个页面做什么:优化主 Agent 使用的 3 类提示词(planner / conversational / reflector),以及把历史经验蒸馏成可复用的课程。Prompt 正文在"提示词"页查看编辑;评测用例在 `data/eval/cases`。',
 }

@@ -54,7 +54,11 @@ export default function SettingsPage() {
       try {
         const res = await fetch('/api/config/budget')
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const data = (await res.json()) as BudgetConfig
+        const raw = (await res.json()) as BudgetConfig | { config: BudgetConfig }
+        const data: BudgetConfig =
+          raw && typeof raw === 'object' && 'config' in raw
+            ? (raw as { config: BudgetConfig }).config
+            : (raw as BudgetConfig)
         if (cancelled) return
         setConfig(data)
         const dm = data.subAgent.downgradeModel
@@ -117,8 +121,8 @@ export default function SettingsPage() {
           config.subAgent.overBehavior === 'downgrade'
             ? customModel
               ? customModelValue.trim()
-              : config.subAgent.downgradeModel
-            : undefined,
+              : config.subAgent.downgradeModel ?? ''
+            : config.subAgent.downgradeModel ?? '',
       },
     }
 
