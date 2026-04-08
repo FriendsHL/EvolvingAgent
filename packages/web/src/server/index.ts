@@ -1,31 +1,16 @@
 import { serve } from '@hono/node-server'
-import { Hono } from 'hono'
-import { cors } from 'hono/cors'
+import { cors as _cors } from 'hono/cors' // re-exported via build-app indirectly; kept for type ergonomics
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 
 import { MetricsCollector, SkillRegistry, SessionManager } from '@evolving-agent/core'
-import { dashboardRoutes } from './routes/dashboard.js'
-import { metricsRoutes } from './routes/metrics.js'
-import { memoryRoutes } from './routes/memory.js'
-import { hooksRoutes } from './routes/hooks.js'
-import { skillsRoutes } from './routes/skills.js'
-import { agentsRoutes } from './routes/agents.js'
-import { sessionsRoutes } from './routes/sessions.js'
-import { chatRoutes } from './routes/chat.js'
-import { toolsRoutes } from './routes/tools.js'
-import { coordinateRoutes } from './routes/coordinate.js'
-import { configRoutes } from './routes/config.js'
-import { mcpRoutes } from './routes/mcp.js'
-import { promptsRoutes } from './routes/prompts.js'
-import { distillRoutes } from './routes/distill.js'
-import { feishuRoutes } from './routes/feishu.js'
 import { AgentRegistry } from './services/agent-registry.js'
 import { SessionStore } from './services/session-store.js'
 import { bootstrapFeishuChannel } from './services/feishu-bootstrap.js'
 import { createFeishuHandler } from './services/feishu-handler.js'
+import { buildApp } from './build-app.js'
 
 const PORT = Number(process.env.EA_WEB_PORT ?? 3721)
 const DATA_PATH = resolve(process.env.EA_DATA_PATH ?? 'data/memory')
@@ -62,32 +47,6 @@ async function main() {
     await sessionManager.create({ id: 'default', title: 'Default chat' })
   }
 
-  const app = new Hono()
-
-  // Middleware
-  app.use('/api/*', cors())
-
-  // Health check
-  app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }))
-
-  // API routes
-  app.route('/api/dashboard', dashboardRoutes(metrics, sessionStore, agentRegistry))
-  app.route('/api/metrics', metricsRoutes(metrics))
-  // Mount distill BEFORE the broader /api/memory so Hono picks the more
-  // specific prefix first.
-  app.route('/api/memory/distill', distillRoutes(sessionManager))
-  app.route('/api/memory', memoryRoutes(DATA_PATH))
-  app.route('/api/hooks', hooksRoutes())
-  app.route('/api/skills', skillsRoutes(skillRegistry))
-  app.route('/api/agents', agentsRoutes(agentRegistry))
-  app.route('/api/sessions', sessionsRoutes(sessionManager, sessionStore))
-  app.route('/api/tools', toolsRoutes())
-  app.route('/api/coordinate', coordinateRoutes(DATA_PATH))
-  app.route('/api/config', configRoutes(sessionManager))
-  app.route('/api/mcp', mcpRoutes(sessionManager, DATA_PATH))
-  app.route('/api/prompts', promptsRoutes(sessionManager))
-  app.route('/api/channels/feishu', feishuRoutes({ channel: feishuChannel }))
-
   // SSE: Server-Sent Events for real-time agent events
   const sseClients = new Set<ReadableStreamDefaultController>()
 
@@ -98,6 +57,19 @@ async function main() {
       try { client.enqueue(encoded) } catch { sseClients.delete(client) }
     }
   }
+
+  // All API routes live in the shared factory so smoke tests can
+  // mount the same surface against an in-process tmp data dir.
+  const app = buildApp({
+    dataPath: DATA_PATH,
+    metrics,
+    skillRegistry,
+    agentRegistry,
+    sessionStore,
+    sessionManager,
+    feishuChannel,
+    broadcast,
+  })
 
   app.get('/api/events', (c) => {
     const stream = new ReadableStream({
@@ -118,9 +90,6 @@ async function main() {
       },
     })
   })
-
-  // Chat routes (needs broadcast)
-  app.route('/api/chat', chatRoutes(agentRegistry, sessionStore, DATA_PATH, broadcast, metrics, sessionManager))
 
   // Serve static files (production: built Vite SPA)
   const __dirname = dirname(fileURLToPath(import.meta.url))
