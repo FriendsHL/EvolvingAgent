@@ -542,58 +542,101 @@ export default function ChatPage() {
             <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group`}>
               <div className="max-w-[75%] flex flex-col items-start gap-1">
                 {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
-                  <div className="w-full flex flex-col gap-1">
-                    {msg.toolCalls.map((call, ci) => (
-                      <details
-                        key={ci}
-                        className={`text-xs rounded-lg border px-2.5 py-1.5 ${
-                          call.success
-                            ? 'border-green-200 bg-green-50 text-green-800'
-                            : 'border-red-200 bg-red-50 text-red-800'
-                        }`}
-                      >
-                        <summary className="cursor-pointer select-none flex items-center gap-2">
-                          <span>{call.success ? '✓' : '✗'}</span>
-                          <span className="font-mono">{call.tool}</span>
-                          {call.description && (
-                            <span className="text-gray-500 truncate">— {call.description}</span>
-                          )}
-                          {typeof call.durationMs === 'number' && (
-                            <span className="text-gray-400 ml-auto">{call.durationMs}ms</span>
-                          )}
-                        </summary>
-                        <div className="mt-1.5 space-y-1 font-mono text-[11px] leading-snug">
-                          {call.input !== undefined && (
-                            <div>
-                              <div className="text-gray-500">input</div>
-                              <pre className="whitespace-pre-wrap break-all bg-white/60 rounded px-1.5 py-1 border border-gray-200">
-                                {typeof call.input === 'string'
-                                  ? call.input
-                                  : JSON.stringify(call.input, null, 2)}
-                              </pre>
-                            </div>
-                          )}
-                          {call.error && (
-                            <div>
-                              <div className="text-red-600">error</div>
-                              <pre className="whitespace-pre-wrap break-all bg-white/60 rounded px-1.5 py-1 border border-red-200">
-                                {call.error}
-                              </pre>
-                            </div>
-                          )}
-                          {call.output !== undefined && call.success && (
-                            <div>
-                              <div className="text-gray-500">output</div>
-                              <pre className="whitespace-pre-wrap break-all bg-white/60 rounded px-1.5 py-1 border border-gray-200 max-h-40 overflow-auto">
-                                {typeof call.output === 'string'
-                                  ? call.output
-                                  : JSON.stringify(call.output, null, 2)}
-                              </pre>
-                            </div>
-                          )}
-                        </div>
-                      </details>
-                    ))}
+                  <div className="w-full flex flex-col gap-1.5">
+                    {msg.toolCalls.map((call, ci) => {
+                      const outputStr = call.output === undefined
+                        ? ''
+                        : typeof call.output === 'string'
+                          ? call.output
+                          : JSON.stringify(call.output, null, 2)
+                      const inputStr = call.input === undefined
+                        ? ''
+                        : typeof call.input === 'string'
+                          ? call.input
+                          : JSON.stringify(call.input, null, 2)
+                      return (
+                        <details
+                          key={ci}
+                          className={`group/tool text-xs rounded-lg border ${
+                            call.success
+                              ? 'border-gray-200 bg-gray-50'
+                              : 'border-red-200 bg-red-50'
+                          }`}
+                        >
+                          <summary className="cursor-pointer select-none flex items-center gap-2 px-3 py-2 list-none marker:hidden [&::-webkit-details-marker]:hidden">
+                            <span
+                              className={`inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold ${
+                                call.success
+                                  ? 'bg-emerald-500 text-white'
+                                  : 'bg-red-500 text-white'
+                              }`}
+                              aria-hidden
+                            >
+                              {call.success ? '✓' : '✗'}
+                            </span>
+                            <span className="inline-flex items-center gap-1 font-mono font-semibold text-gray-800">
+                              🔧 {call.tool}
+                            </span>
+                            {call.description && (
+                              <span className="text-gray-500 truncate flex-1 min-w-0 font-normal">
+                                {call.description}
+                              </span>
+                            )}
+                            {typeof call.durationMs === 'number' && (
+                              <span className="text-[10px] text-gray-400 font-mono shrink-0">
+                                {call.durationMs}ms
+                              </span>
+                            )}
+                            <span className="text-gray-400 text-[10px] shrink-0 transition-transform group-open/tool:rotate-180">
+                              ▾
+                            </span>
+                          </summary>
+                          <div className="px-3 pb-2.5 pt-0 space-y-2 border-t border-gray-200/60 font-mono text-[11px] leading-snug">
+                            {inputStr && (
+                              <div>
+                                <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400 mb-0.5 mt-2">
+                                  <span>input</span>
+                                </div>
+                                <div className="rounded bg-white border border-gray-200 px-2 py-1.5 whitespace-pre-wrap break-all max-h-32 overflow-auto text-gray-700">
+                                  {inputStr}
+                                </div>
+                              </div>
+                            )}
+                            {call.error && (
+                              <div>
+                                <div className="text-[10px] uppercase tracking-wide text-red-600 mb-0.5">
+                                  error
+                                </div>
+                                <div className="rounded bg-white border border-red-200 px-2 py-1.5 whitespace-pre-wrap break-all text-red-700 max-h-32 overflow-auto">
+                                  {call.error}
+                                </div>
+                              </div>
+                            )}
+                            {outputStr && call.success && (
+                              <div>
+                                <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400 mb-0.5">
+                                  <span>output</span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      void navigator.clipboard.writeText(outputStr)
+                                    }}
+                                    className="hover:text-blue-600 normal-case tracking-normal text-[10px] font-sans"
+                                    title="Copy"
+                                  >
+                                    copy
+                                  </button>
+                                </div>
+                                <div className="rounded bg-white border border-gray-200 px-2 py-1.5 whitespace-pre-wrap break-all max-h-48 overflow-auto text-gray-700">
+                                  {outputStr}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      )
+                    })}
                   </div>
                 )}
                 {editingIndex === i ? (
