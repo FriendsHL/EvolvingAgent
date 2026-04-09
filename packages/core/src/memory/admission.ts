@@ -76,6 +76,21 @@ export function scoreComplexity(steps: ExecutionStep[]): number {
   return 0.2
 }
 
+/**
+ * S0: conceptual richness in [0, 1], computed at admission time.
+ *
+ * Cheap tag-density signal — `min(1, tags.length / 8)`. Eight tags is
+ * where we declare an experience "fully cross-referenced". This is a
+ * stand-in for the embedding-L2 norm the spec eventually wants; we
+ * compute it here rather than in MemoryManager because admission is
+ * the canonical choke point and every new Experience already flows
+ * through this function. Lives on `ExperienceHealth.conceptualRichness`
+ * and feeds the 0.06 weight in `computeHealthScore`.
+ */
+export function scoreConceptualRichness(tags: string[]): number {
+  return Math.min(1, tags.length / 8)
+}
+
 export function computeAdmission(
   task: string,
   steps: ExecutionStep[],
