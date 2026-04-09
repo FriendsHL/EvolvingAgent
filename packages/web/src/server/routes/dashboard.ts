@@ -1,8 +1,23 @@
 import { Hono } from 'hono'
-import type { MetricsCollector, SessionManager } from '@evolving-agent/core'
-import type { SessionStore, PersistedSession } from '../services/session-store.js'
+import type { LLMCallMetrics, MetricsCollector, SessionManager } from '@evolving-agent/core'
+import type { SessionStore } from '../services/session-store.js'
 import type { AgentRegistry } from '../services/agent-registry.js'
 
+/**
+ * Dashboard data sources (post Phase 4 E2E fix #2):
+ *
+ * - Top numbers + trends → file-backed MetricsCollector (single source of
+ *   truth; every LLM call appends to `metrics/calls/YYYY-MM-DD.jsonl`).
+ * - Session list → SessionManager (Phase 3 hot path). Falls back to the
+ *   legacy SessionStore so smoke tests with synthetic sessionStore data
+ *   still see something.
+ * - Per-agent breakdown → AgentRegistry when populated; otherwise we
+ *   synthesize a single "main" row so the All Agents card row never
+ *   renders empty in the env-driven default deployment.
+ *
+ * The collector currently does NOT tag calls by agentId/sessionId, so
+ * those query params are no-ops on `/trends` and `/summary` totals.
+ */
 export function dashboardRoutes(
   metrics: MetricsCollector,
   sessionStore: SessionStore,
@@ -11,27 +26,7 @@ export function dashboardRoutes(
 ) {
   const app = new Hono()
 
-  // Overview: per-agent breakdown + global totals
-  //
-  // Primary source of truth is the file-backed MetricsCollector (every chat
-  // turn appends to `metrics/calls/<date>.jsonl`). Session counts come from
-  // the Phase 3 SessionManager when available, falling back to the legacy
-  // SessionStore for backwards compatibility.
   app.get('/summary', async (c) => {
-    const agentId = c.req.query('agentId')
-    const sessionId = c.req.query('sessionId')
-
-    let sessions = sessionStore.getAll()
-    if (agentId) sessions = sessions.filter((s) => s.agentId === agentId)
-    if (sessionId) sessions = sessions.filter((s) => s.id === sessionId)
-
-    const legacyTotalMessages = sessions.reduce((s, sess) => s + sess.messages.length, 0)
-    const legacyActive = sessions.filter((s) => s.status === 'active').length
-
-    // Pull global metrics aggregate (unfiltered — the collector doesn't
-    // currently tag by agentId/sessionId, so filters are a no-op here; the
-    // per-agent breakdown below still uses session-level totals for legacy
-    // data). This gives the top-row numbers real values again.
     const agg = await metrics.aggregate().catch(() => ({
       totalCalls: 0,
       totalPromptTokens: 0,
@@ -40,33 +35,49 @@ export function dashboardRoutes(
       totalSavedCost: 0,
       avgCacheHitRate: 0,
     }))
-    const managerSessions = sessionManager?.list() ?? []
-    const totalSessions = Math.max(managerSessions.length, sessions.length)
-    const activeSessions = Math.max(managerSessions.length, legacyActive)
-    const totalCost = agg.totalCost
-    const totalTokens = agg.totalPromptTokens + agg.totalCompletionTokens
-    const totalCalls = agg.totalCalls > 0 ? agg.totalCalls : legacyTotalMessages
 
-    // Per-agent breakdown (only when not filtered to single agent)
-    const agents = agentRegistry.getAll()
-    const agentBreakdown = agents.map((agent) => {
-      const agentSessions = sessionStore.getAll().filter((s) => s.agentId === agent.id)
-      return {
-        id: agent.id,
-        name: agent.name,
-        provider: typeof agent.provider === 'string' ? agent.provider : agent.provider.type,
-        sessionCount: agentSessions.length,
-        activeSessions: agentSessions.filter((s) => s.status === 'active').length,
-        totalCost: agentSessions.reduce((s, sess) => s + sess.totalCost, 0),
-        totalTokens: agentSessions.reduce((s, sess) => s + sess.totalTokens, 0),
-        totalMessages: agentSessions.reduce((s, sess) => s + sess.messages.length, 0),
-      }
-    })
+    const managerSessions = sessionManager?.list() ?? []
+    const legacySessions = sessionStore.getAll()
+    const totalSessions = Math.max(managerSessions.length, legacySessions.length)
+    const activeSessions = Math.max(
+      managerSessions.length,
+      legacySessions.filter((s) => s.status === 'active').length,
+    )
+
+    // Per-agent breakdown. The AgentRegistry is informational in the
+    // env-driven default deployment, so when it is empty we synthesize a
+    // single "main" row from the global aggregate so the dashboard's All
+    // Agents card row + Cost-by-Agent chart render with real numbers.
+    const registryAgents = agentRegistry.getAll()
+    const agentBreakdown = registryAgents.length > 0
+      ? registryAgents.map((agent) => {
+          const agentSessions = legacySessions.filter((s) => s.agentId === agent.id)
+          return {
+            id: agent.id,
+            name: agent.name,
+            provider: typeof agent.provider === 'string' ? agent.provider : agent.provider.type,
+            sessionCount: agentSessions.length,
+            activeSessions: agentSessions.filter((s) => s.status === 'active').length,
+            totalCost: agentSessions.reduce((s, sess) => s + sess.totalCost, 0),
+            totalTokens: agentSessions.reduce((s, sess) => s + sess.totalTokens, 0),
+            totalMessages: agentSessions.reduce((s, sess) => s + sess.messages.length, 0),
+          }
+        })
+      : [{
+          id: 'main',
+          name: 'Main Agent',
+          provider: process.env.EVOLVING_AGENT_PROVIDER ?? 'default',
+          sessionCount: managerSessions.length,
+          activeSessions: managerSessions.length,
+          totalCost: agg.totalCost,
+          totalTokens: agg.totalPromptTokens + agg.totalCompletionTokens,
+          totalMessages: agg.totalCalls,
+        }]
 
     return c.json({
-      totalCost,
-      totalTokens,
-      totalCalls,
+      totalCost: agg.totalCost,
+      totalTokens: agg.totalPromptTokens + agg.totalCompletionTokens,
+      totalCalls: agg.totalCalls,
       totalSessions,
       activeSessions,
       avgCacheHitRate: agg.avgCacheHitRate,
@@ -75,12 +86,36 @@ export function dashboardRoutes(
     })
   })
 
-  // Session list for a specific agent (or all)
+  // Session list — SessionManager is the hot path; fall back to legacy
+  // SessionStore only when the manager has nothing (or for tests that
+  // pre-populate sessionStore directly).
   app.get('/sessions', (c) => {
     const agentId = c.req.query('agentId')
+    const managerSessions = sessionManager?.list() ?? []
+
+    if (managerSessions.length > 0) {
+      // SessionMetadata has no agentId binding; in the env-driven runtime
+      // every session is owned by the synthetic "main" agent. Filter only
+      // when the requested agentId matches that synthetic id.
+      const matched = !agentId || agentId === 'main' ? managerSessions : []
+      return c.json({
+        sessions: matched.map((s) => ({
+          id: s.id,
+          agentId: 'main',
+          status: 'active' as const,
+          startedAt: new Date(s.createdAt).toISOString(),
+          closedAt: undefined,
+          totalCost: 0,
+          totalTokens: 0,
+          messageCount: s.messageCount,
+          lastMessage: s.title,
+        })),
+      })
+    }
+
+    // Legacy fallback
     let sessions = sessionStore.getAll()
     if (agentId) sessions = sessions.filter((s) => s.agentId === agentId)
-
     return c.json({
       sessions: sessions.map((s) => ({
         id: s.id,
@@ -98,21 +133,30 @@ export function dashboardRoutes(
     })
   })
 
-  // Trend data — supports period=hour|day, filtered by agentId/sessionId
+  // Trend data — pull real LLM-call metrics from MetricsCollector and
+  // bucket them by day or hour. agentId/sessionId filters are no-ops
+  // because the collector does not currently tag by either; we keep the
+  // params accepted so the client URL shape stays stable.
   app.get('/trends', async (c) => {
     const period = c.req.query('period') ?? 'day'
     const range = Number(c.req.query('range') ?? (period === 'hour' ? 24 : 7))
-    const agentId = c.req.query('agentId')
-    const sessionId = c.req.query('sessionId')
-
-    let sessions = sessionStore.getAll()
-    if (agentId) sessions = sessions.filter((s) => s.agentId === agentId)
-    if (sessionId) sessions = sessions.filter((s) => s.id === sessionId)
 
     if (period === 'hour') {
-      return c.json({ points: buildHourlyTrends(sessions, range) })
+      const now = new Date()
+      const start = new Date(now.getTime() - range * 3600_000)
+      const calls = await metrics
+        .getByDateRange(start.toISOString().slice(0, 10), now.toISOString().slice(0, 10))
+        .catch(() => [] as LLMCallMetrics[])
+      return c.json({ points: buildHourlyTrends(calls, range, now) })
     }
-    return c.json({ points: buildDailyTrends(sessions, range) })
+
+    const now = new Date()
+    const start = new Date(now)
+    start.setDate(start.getDate() - (range - 1))
+    const calls = await metrics
+      .getByDateRange(start.toISOString().slice(0, 10), now.toISOString().slice(0, 10))
+      .catch(() => [] as LLMCallMetrics[])
+    return c.json({ points: buildDailyTrends(calls, range, now) })
   })
 
   return app
@@ -128,82 +172,73 @@ interface TrendPoint {
   models: Record<string, number>
 }
 
-interface SessionLike {
-  messages: Array<{ role: string; content: string; timestamp: string }>
-  totalCost: number
-  totalTokens: number
-  startedAt: string
+function emptyPoint(date: string): TrendPoint {
+  return {
+    date,
+    inputTokens: 0,
+    outputTokens: 0,
+    cost: 0,
+    cacheHitRate: 0,
+    calls: 0,
+    models: {},
+  }
 }
 
-function buildDailyTrends(sessions: SessionLike[], range: number): TrendPoint[] {
-  const now = new Date()
-  const points: TrendPoint[] = []
+function addCall(point: TrendPoint, m: LLMCallMetrics): void {
+  point.inputTokens += m.tokens.prompt
+  point.outputTokens += m.tokens.completion
+  point.cost += m.cost
+  point.calls += 1
+  point.cacheHitRate += m.cacheHitRate
+  point.models[m.model] = (point.models[m.model] ?? 0) + 1
+}
 
+function finalizePoint(point: TrendPoint): TrendPoint {
+  if (point.calls > 0) {
+    point.cacheHitRate = point.cacheHitRate / point.calls
+  }
+  return point
+}
+
+function buildDailyTrends(calls: LLMCallMetrics[], range: number, now: Date): TrendPoint[] {
+  const points = new Map<string, TrendPoint>()
   for (let i = range - 1; i >= 0; i--) {
     const d = new Date(now)
     d.setDate(d.getDate() - i)
     const date = d.toISOString().slice(0, 10)
-    const daySessions = sessions.filter((s) => s.startedAt.slice(0, 10) === date)
-    points.push(aggregateSessionsToPoint(date, daySessions))
+    points.set(date, emptyPoint(date))
   }
 
-  return points
+  for (const call of calls) {
+    const date = call.timestamp.slice(0, 10)
+    const point = points.get(date)
+    if (point) addCall(point, call)
+  }
+
+  return [...points.values()].map(finalizePoint)
 }
 
-function buildHourlyTrends(sessions: SessionLike[], range: number): TrendPoint[] {
-  const now = new Date()
-  const points: TrendPoint[] = []
+function buildHourlyTrends(calls: LLMCallMetrics[], range: number, now: Date): TrendPoint[] {
+  const buckets: TrendPoint[] = []
+  const bucketStarts: number[] = []
 
   for (let i = range - 1; i >= 0; i--) {
-    const bucketStart = new Date(now.getTime() - i * 3600_000)
-    bucketStart.setMinutes(0, 0, 0)
-    const bucketEnd = new Date(bucketStart.getTime() + 3600_000)
-    const hourLabel = bucketStart.toISOString().slice(0, 13) + ':00'
+    const start = new Date(now.getTime() - i * 3600_000)
+    start.setMinutes(0, 0, 0)
+    bucketStarts.push(start.getTime())
+    buckets.push(emptyPoint(start.toISOString().slice(0, 13) + ':00'))
+  }
 
-    let msgCount = 0
-    let totalCost = 0
-    let totalTokens = 0
-
-    for (const sess of sessions) {
-      for (const msg of sess.messages) {
-        const t = new Date(msg.timestamp).getTime()
-        if (t >= bucketStart.getTime() && t < bucketEnd.getTime()) {
-          msgCount++
-        }
-      }
-      const sessStart = new Date(sess.startedAt).getTime()
-      if (sessStart >= bucketStart.getTime() && sessStart < bucketEnd.getTime()) {
-        totalCost += sess.totalCost
-        totalTokens += sess.totalTokens
+  for (const call of calls) {
+    const t = new Date(call.timestamp).getTime()
+    for (let i = 0; i < bucketStarts.length; i++) {
+      const bucketStart = bucketStarts[i]
+      if (t >= bucketStart && t < bucketStart + 3600_000) {
+        addCall(buckets[i], call)
+        break
       }
     }
-
-    points.push({
-      date: hourLabel,
-      inputTokens: Math.round(totalTokens * 0.7),
-      outputTokens: Math.round(totalTokens * 0.3),
-      cost: totalCost,
-      cacheHitRate: 0,
-      calls: msgCount,
-      models: {},
-    })
   }
 
-  return points
-}
-
-function aggregateSessionsToPoint(date: string, sessions: SessionLike[]): TrendPoint {
-  const totalCost = sessions.reduce((s, sess) => s + sess.totalCost, 0)
-  const totalTokens = sessions.reduce((s, sess) => s + sess.totalTokens, 0)
-  const totalMessages = sessions.reduce((s, sess) => s + sess.messages.length, 0)
-
-  return {
-    date,
-    inputTokens: Math.round(totalTokens * 0.7),
-    outputTokens: Math.round(totalTokens * 0.3),
-    cost: totalCost,
-    cacheHitRate: 0,
-    calls: totalMessages,
-    models: {},
-  }
+  return buckets.map(finalizePoint)
 }
