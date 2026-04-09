@@ -374,7 +374,7 @@ The §3.1 file list below is updated based on the two findings above:
 |---|---|---|
 | **NEW** | `packages/core/src/sub-agents/types.ts` | `SubAgentDef` interface. Frontmatter fields per §2.4 |
 | **NEW** | `packages/core/src/sub-agents/loader.ts` | Markdown frontmatter parser → `Map<name, SubAgentDef>`. Loads from `builtin/*.md` first, then `data/sub-agents/*.md` overrides |
-| **NEW** | `packages/core/src/sub-agents/builtin/research.md` | Research persona body verbatim from §6.1 |
+| **NEW** | `packages/core/src/sub-agents/builtin/research.md` | Research persona identity prompt (canonical location; earlier drafts referenced §6.1 but no such spec section exists — the file itself is the source of truth) |
 | **NEW** | `packages/core/src/sub-agents/router-tool.ts` | Builds the `delegate` tool definition with `z.enum(loader.list().map(d => d.name))` for the `subagent_type` parameter — enum is dynamically derived from loaded SubAgentDefs so adding `code.md` later auto-extends the router |
 | **NEW** | `packages/core/src/sub-agents/probe.ts` | ✅ **already shipped** as part of the prework. Re-runnable any time |
 | **MODIFY** | `packages/core/src/planner/planner.ts` | Add `mode: 'router' \| 'solo'` ctor option (read from env `EA_ROUTER`). In router mode: build the delegate tool, pass `tools` to `llm.generate(...)`, branch on `result.toolCalls.length`. **Invert the catch fallback at `:122-128`**: parse failure → return a `delegate research` plan, not empty steps |
@@ -411,8 +411,11 @@ is the natural unit for the next 3-agent dev cycle.
 ### 3.1 Files created
 
 - `packages/core/src/sub-agents/builtin/research.md` — the research sub-agent
-  definition. Uses the Designer's §6.1 prompt body verbatim (it's actually
-  well-written and EA-specific enough).
+  definition. The file itself is the canonical source for the persona prompt
+  body; earlier spec drafts referenced a §6.1 section that was never written.
+  The prompt was composed in-line during S1 dev by the Dev agent and reviewed
+  by Nitpick + Judge, and it's well-scoped and EA-specific enough to serve
+  as the ongoing source of truth for the persona.
 - `packages/core/src/sub-agents/loader.ts` — ~80 lines. Reads
   `builtin/*.md` + `data/sub-agents/*.md`, parses frontmatter, validates
   schema, registers identity prompts in `PromptRegistry`, returns a
@@ -442,8 +445,16 @@ Only used on the side branch; when the branch merges, the flag is deleted
 
 - Independent `RouterAgent` class
 - Independent `SubAgentRuntime` class
-- `data/sub-agents/` override directory (builtins only)
-- Memory namespacing / per-agent experience slicing
+- ~~`data/sub-agents/` override directory (builtins only)~~ — actually shipped in
+  S1. The loader honors `<dataPath>/sub-agents/*.md` user overrides with the
+  same frontmatter format as builtins; missing directory is silent. Harmless
+  scope creep, kept because the API shape was symmetric.
+- Memory namespacing / per-agent experience slicing (router-mode delegate
+  turns currently **bypass** reflector / experience storage / skill-auto-
+  create / hook-auto-create — the single-step opaque delegation doesn't fit
+  the multi-step JSON plan shape those stages expect. A `hook` trace event
+  makes the bypass visible, and **S5 will add a proper sub-agent reflection
+  hook** so delegate turns can contribute to experience distillation.)
 - Sub-agent-to-sub-agent handoff
 - `CoordinatePage` UI changes
 - `data/eval/router-cases.jsonl` eval fixture
