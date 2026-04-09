@@ -163,6 +163,113 @@ the rubber-stamping failure mode that kills naive multi-agent systems.
 
 Built on a side branch `phase5-router` **after E2E round 2 completes on main**.
 
+### 3.0 S0 — Memory scoring warm-up (lands before any router code)
+
+**Why it lives here**: Phase 5's research sub-agent will hit the retriever
+an order of magnitude more than the current single-agent path. If we ship
+router+sub-agent on top of EA's current 3-dimension health scoring, we get
+a research agent whose memory surface is a saturated counter
+(`Math.min(1.0, referencedCount / 10)` in `experience-store.ts:252` — a
+memory used 1000 times and one used 10 times look identical). The scoring
+upgrade is both a prerequisite for credible sub-agent behavior and a
+low-risk internal change that's easy to land first.
+
+**Source of the design**: adapted from openclaw's six-signal dreaming
+consolidation weighting (`extensions/memory-core/src/dreaming.ts` in
+`/Users/huanglin12/myspace/openclaw`), minus the stuff we don't need
+(cron/phase machine/diary narrative — those are Phase 6).
+
+**What exists today** (two separate scoring layers in EA):
+- Admission scoring, 5-D, at experience creation — `packages/core/src/memory/admission.ts`
+  - `novelty / lessonValue / reusability / userSignal / complexity`
+  - This layer stays untouched in S0.
+- Health scoring, 3-D, at retrieval/eviction — `packages/core/src/memory/experience-store.ts:243 computeHealthScore`
+  - `recency (0.30) + frequency (0.30) + quality (0.40)`
+  - This layer gets rewritten in S0.
+
+**Four dimensions that are currently missing** and that S0 adds:
+
+1. **Relevance-weighted retrieval** (target weight ~0.30). Today
+   `referencedCount++` fires on every hit regardless of similarity — a
+   0.99 precision match and a 0.51 border-line scrape score identically.
+   Add `health.totalRelevance` (running sum of similarity scores); derive
+   `avgRelevance = totalRelevance / referencedCount`.
+
+2. **Query diversity** (target ~0.15). An experience hit by one repeated
+   query vs by 50 distinct queries carries very different signal. Add
+   `health.distinctQueries` (count) and/or cluster recent query vectors.
+
+3. **Multi-day consolidation** (target ~0.10). "Used 20 times today" is
+   noise; "used 2 times a day for 10 days" is a stable pattern. Compute
+   `distinctDays` from the new retrieval log (see below).
+
+4. **Conceptual richness** (target ~0.06). Information density / embedding
+   L2 norm / concept-tag count. Cheap to compute at admission time; acts
+   as a small tiebreaker.
+
+**Plus one bug to fix while we're here**: the frequency term is currently
+saturated at `referencedCount / 10`. Replace with log-scale:
+`log(1 + count) / log(1 + maxCountAmongActive)`, or quantile bucketing.
+This single change meaningfully reshapes eviction order for any pool
+with a long tail.
+
+**Required infrastructure**:
+
+- `packages/core/src/memory/recall-log.ts` (new, ~100 lines). Appends
+  `{experienceId, query, similarity, timestamp, sessionId}` to
+  `data/memory/recall-log/YYYY-MM-DD.jsonl` on every retrieval hit. Adds
+  a `readRecent(days)` helper for downstream scoring. JSONL format matches
+  the existing `metrics/calls/` convention so operational tooling carries
+  over.
+
+- `packages/core/src/memory/retriever.ts` (modified, ~10 lines). On each
+  successful retrieval, call `recallLog.append(...)` before returning. No
+  behavior change to the retrieval itself.
+
+- `packages/core/src/types.ts` (modified, ~8 lines). Extend
+  `ExperienceHealth` with optional `totalRelevance?: number`,
+  `distinctQueries?: number`, `distinctDays?: number`,
+  `conceptualRichness?: number`. Optional to avoid schema migration on
+  existing experiences — undefined is treated as 0 at read time.
+
+- `packages/core/src/memory/experience-store.ts` (modified, ~80 lines).
+  Rewrite `computeHealthScore` as a six-signal weighted sum. Periodic
+  pool-wide recomputation walks the recall log to refresh
+  `distinctQueries` / `distinctDays` / `totalRelevance` — runs on the
+  same cadence as the existing stale→archive eviction sweep so no new
+  scheduler is needed.
+
+**Scoring formula** (starting point, tunable in S0.1):
+
+```
+health = 0.24 * logScaleFrequency
+       + 0.30 * avgRelevance
+       + 0.15 * normalizedDiversity
+       + 0.15 * recencyDecay           // existing 14-day half-life, kept
+       + 0.10 * normalizedDistinctDays
+       + 0.06 * conceptualRichness
+```
+
+Weights copy openclaw's defaults verbatim; they'll need calibration once
+we have real retrieval traces.
+
+**S0 acceptance criteria**:
+
+1. All existing tests pass unchanged (the scoring rewrite is internal).
+2. A new test covers recall-log append/read + six-signal computation on
+   a small fixture set.
+3. `computeHealthScore` returns a value in `[0, 1]` for every experience
+   in the test fixtures, including ones with `undefined` new fields.
+4. Feed a synthetic pool with three profiles — "hot hit 100×", "single
+   query 50×", "stable 2×/day × 10d" — and verify the stable pattern
+   ranks highest under the new formula (current formula ranks them all
+   ≈ equal due to frequency saturation).
+
+**S0 is NOT**: dreaming cron, daily-note side channel, diary narrative,
+DREAMS.md output, phase machine, or any LLM call. Those are Phase 6 and
+deliberately stay out — S0 is a pure scoring upgrade that lands before
+any router code, ~250 lines total across 4 files.
+
 ### 3.1 Files created
 
 - `packages/core/src/sub-agents/builtin/research.md` — the research sub-agent
