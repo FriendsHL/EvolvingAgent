@@ -40,6 +40,8 @@ import { PLANNER_SYSTEM_PROMPT } from './planner/planner.js'
 import { REFLECTOR_SYSTEM_PROMPT } from './reflector/reflector.js'
 import type { AgentCoordinator } from './multi-agent/coordinator.js'
 import type { PromptConfig, LLMCallMetrics } from './types.js'
+import type { SubAgentManager } from './sub-agent/manager.js'
+import type { SubAgentRegistry } from './sub-agents/loader.js'
 
 /**
  * Shared singletons that can be injected into an Agent so multiple Agent
@@ -76,6 +78,15 @@ export interface AgentConfig {
   provider?: ProviderConfig | PresetName // LLM provider config or preset name (default: auto-detect from env)
   /** Optional shared singletons (Phase 3 Batch 3 — multi-session). */
   shared?: AgentSharedDeps
+  /**
+   * Phase 5 router-mode dependencies. When both are provided AND the
+   * `EA_ROUTER` env flag is set (to anything other than 'off'), the
+   * planner runs in router mode and `delegate` plan steps are dispatched
+   * through the shared SubAgentManager. Undefined on either side disables
+   * router mode — behavior stays byte-identical to the pre-Phase-5 path.
+   */
+  subAgentManager?: SubAgentManager
+  subAgentRegistry?: SubAgentRegistry
 }
 
 type EventCallback = (event: AgentEvent) => void
@@ -133,6 +144,11 @@ export class Agent {
   private ownsCacheMetrics: boolean
   private promptRegistry: PromptRegistry
   private ownsPromptRegistry: boolean
+  /** Phase 5 — optional router-mode dependencies. */
+  private subAgentManager?: SubAgentManager
+  private subAgentRegistry?: SubAgentRegistry
+  /** Phase 5 — resolved once at construction from process.env.EA_ROUTER. */
+  private routerMode: boolean
   /** Task id for the in-flight processMessage call; used by the budget guard. */
   private currentTaskId: string | null = null
   private listeners: EventCallback[] = []
@@ -290,8 +306,27 @@ export class Agent {
       this.skills.list(),
     )
 
+    // Phase 5 — resolve router mode once at construction so the flag is
+    // stable for the whole Agent lifetime. Missing registry / manager
+    // silently disables the feature even when EA_ROUTER=on, so existing
+    // tests that don't set up Phase 5 deps keep working.
+    this.subAgentManager = config.subAgentManager
+    this.subAgentRegistry = config.subAgentRegistry
+    const flag = process.env.EA_ROUTER
+    this.routerMode =
+      !!flag && flag !== 'off' && !!this.subAgentRegistry && !!this.subAgentManager
+
     // Initialize components — pass skill registry + capability map to planner
-    this.planner = new Planner(this.llm, this.skills, this.capabilityMap, this.promptRegistry)
+    this.planner = new Planner(
+      this.llm,
+      this.skills,
+      this.capabilityMap,
+      this.promptRegistry,
+      {
+        routerMode: this.routerMode,
+        subAgentRegistry: this.subAgentRegistry,
+      },
+    )
     this.executor = new Executor(this.tools, this.hooks, this.skills, this.createSkillContext())
     this.reflector = new Reflector(this.llm, this.promptRegistry)
   }
@@ -453,6 +488,87 @@ export class Agent {
   }
 
   /**
+   * Phase 5 — dispatch a synthetic `delegate` plan step to the shared
+   * SubAgentManager. Always called with a single-step plan whose tool is
+   * 'delegate' and whose params carry `subagent_type`, `task`, and
+   * `rationale`. Returns the sub-agent's answer string.
+   *
+   * Acceptance criterion 5 — sub-agent failures surface as explicit error
+   * messages, never silent fallbacks to conversational hallucination.
+   */
+  private async runDelegateStep(step: import('./types.js').PlanStep): Promise<string> {
+    if (!this.subAgentManager || !this.subAgentRegistry) {
+      throw new Error('runDelegateStep called without router-mode dependencies')
+    }
+    const params = (step.params ?? {}) as {
+      subagent_type?: string
+      task?: string
+      rationale?: string
+    }
+    const subagentType = params.subagent_type ?? ''
+    const def = this.subAgentRegistry.get(subagentType)
+    if (!def) {
+      // Defensive — the planner's enum is built from the same registry,
+      // so this should only fire if config drifted between plan and
+      // execute (e.g. hot-reloaded builtins mid-request).
+      throw new Error(`Router picked unknown subagent_type "${subagentType}"`)
+    }
+
+    // S1: single-step opaque delegation. Reflector / experience storage
+    // / skill auto-creation / hook auto-creation are intentionally skipped
+    // on this path — the single synthesized step doesn't fit the multi-step
+    // JSON plan shape those stages expect. S5 (memory partitioning) will
+    // revisit this with a proper sub-agent reflection hook.
+    this.emit({
+      type: 'hook',
+      data: `router-mode: delegating to ${def.name}, bypassing executor/reflector/experience for this turn`,
+      timestamp: new Date().toISOString(),
+    })
+    this.emit({
+      type: 'executing',
+      data: `Delegating to ${def.name}: ${params.rationale ?? ''}`.trim(),
+      timestamp: new Date().toISOString(),
+    })
+
+    const handle = await this.subAgentManager.spawn({
+      mode: 'adhoc',
+      name: def.name,
+      systemPrompt: def.identityPrompt,
+      tools: def.tools,
+      task: {
+        description: params.task ?? step.description,
+      },
+    })
+
+    handle.onProgress((p) => {
+      // The IPC protocol uses `status` + `summary` (not `stage`/`detail`).
+      this.emit({
+        type: 'hook',
+        data: `[${def.name}] ${p.status}: ${p.summary}`,
+        timestamp: new Date().toISOString(),
+      })
+    })
+
+    try {
+      const taskResult = await handle.result()
+      if (taskResult.outcome === 'failure') {
+        const reason =
+          taskResult.reflection?.whatFailed?.[0] ??
+          taskResult.result.answer ??
+          'sub-agent task failed'
+        throw new Error(`Sub-agent ${def.name} failed: ${reason}`)
+      }
+      return taskResult.result.answer
+    } finally {
+      try {
+        await handle.close()
+      } catch {
+        // Best-effort — manager will clean up on shutdown regardless.
+      }
+    }
+  }
+
+  /**
    * Process a user message through the full agent loop:
    * Input → Retrieve → Plan → Execute → Respond → Reflect → Store
    */
@@ -523,6 +639,27 @@ export class Agent {
       const response = await this.generateConversationalResponse(userMessage)
       this.memory.addMessage('assistant', response)
       this.emit({ type: 'message', data: { role: 'assistant', content: response }, timestamp: new Date().toISOString() })
+      return response
+    }
+
+    // 4b. Phase 5 — router-mode delegate dispatch. Single synthetic step
+    // routed to a sub-agent via SubAgentManager. The sub-agent's answer
+    // becomes the assistant reply directly, bypassing the regular
+    // executor / summarizer / reflector pipeline (those are designed for
+    // multi-step JSON plans, not a single opaque delegation).
+    if (
+      plan.steps.length === 1 &&
+      plan.steps[0].tool === 'delegate' &&
+      this.subAgentManager &&
+      this.subAgentRegistry
+    ) {
+      const response = await this.runDelegateStep(plan.steps[0])
+      this.memory.addMessage('assistant', response)
+      this.emit({
+        type: 'message',
+        data: { role: 'assistant', content: response },
+        timestamp: new Date().toISOString(),
+      })
       return response
     }
 
@@ -712,6 +849,35 @@ export class Agent {
       this.memory.addMessage('assistant', fullText)
       this.emit({ type: 'message', data: { role: 'assistant', content: fullText }, timestamp: new Date().toISOString() })
       yield { type: 'done', response: fullText, metrics: { cost: this.session.totalCost, tokens: this.session.totalTokens } }
+      return
+    }
+
+    // 4b. Phase 5 — router-mode delegate dispatch (streaming variant).
+    // The sub-agent's final answer is emitted as a single text-delta so
+    // the UI renders it; real progressive streaming from inside the sub-
+    // agent would require a streaming protocol extension we haven't built
+    // yet. The `hook` events surfaced by runDelegateStep's progress
+    // listener still flow through the existing emit() path.
+    if (
+      plan.steps.length === 1 &&
+      plan.steps[0].tool === 'delegate' &&
+      this.subAgentManager &&
+      this.subAgentRegistry
+    ) {
+      yield { type: 'status', message: 'Delegating to sub-agent...' }
+      const answer = await this.runDelegateStep(plan.steps[0])
+      yield { type: 'text-delta', text: answer }
+      this.memory.addMessage('assistant', answer)
+      this.emit({
+        type: 'message',
+        data: { role: 'assistant', content: answer },
+        timestamp: new Date().toISOString(),
+      })
+      yield {
+        type: 'done',
+        response: answer,
+        metrics: { cost: this.session.totalCost, tokens: this.session.totalTokens },
+      }
       return
     }
 
