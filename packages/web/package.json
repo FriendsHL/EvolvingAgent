@@ -12,6 +12,8 @@
   "dependencies": {
     "@evolving-agent/core": "workspace:*",
     "@hono/node-server": "^1.14.0",
+    "@types/adm-zip": "^0.5.8",
+    "adm-zip": "^0.5.17",
     "hono": "^4.7.0",
     "nanoid": "^5.1.0",
     "playwright": "^1.59.1",

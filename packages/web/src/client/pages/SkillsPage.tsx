@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useApi } from '../hooks/useApi.js'
 import { apiGet, apiPost, apiPut, apiDelete, apiPatch } from '../api/client.js'
+
+const API_BASE = '/api'
 
 // === Types ===
 
@@ -71,6 +73,27 @@ export default function SkillsPage() {
   const [showForm, setShowForm] = useState(false)
   const [historySkillId, setHistorySkillId] = useState<string | null>(null)
   const [historyData, setHistoryData] = useState<SkillUsageRecord[]>([])
+  const [uploadState, setUploadState] = useState<{ status: 'idle' | 'uploading' | 'ok' | 'error'; message?: string }>({ status: 'idle' })
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleUpload = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setUploadState({ status: 'error', message: 'Only .zip files are supported' })
+      return
+    }
+    setUploadState({ status: 'uploading', message: file.name })
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await fetch(`${API_BASE}/skills/upload`, { method: 'POST', body: fd })
+      const body = await res.json()
+      if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`)
+      setUploadState({ status: 'ok', message: `Installed: ${body.name} (${body.extractedFiles} files)` })
+      refetch()
+    } catch (err) {
+      setUploadState({ status: 'error', message: err instanceof Error ? err.message : 'Upload failed' })
+    }
+  }
 
   // Filter skills by tab
   const filtered = activeTab === 'all' ? skills : skills.filter((s) => s.category === activeTab)
@@ -160,15 +183,62 @@ export default function SkillsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-3">
         <h2 className="text-xl font-semibold">Skills</h2>
-        <button
-          onClick={openCreate}
-          className="bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700"
-        >
-          Create Skill
-        </button>
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".zip,application/zip"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) void handleUpload(file)
+              if (e.target) e.target.value = ''
+            }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadState.status === 'uploading'}
+            className="inline-flex items-center gap-1.5 bg-white border border-gray-300 text-gray-700 text-sm px-3 py-2 rounded-lg hover:border-blue-400 hover:text-blue-600 disabled:opacity-50"
+            title="Upload a .zip containing SKILL.md + scripts/ + references/"
+          >
+            📦 Upload .zip
+          </button>
+          <button
+            onClick={openCreate}
+            className="bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700"
+          >
+            Create Skill
+          </button>
+        </div>
       </div>
+
+      {uploadState.status !== 'idle' && (
+        <div
+          className={`mb-4 text-xs rounded-lg px-3 py-2 border flex items-center justify-between ${
+            uploadState.status === 'error'
+              ? 'border-red-200 bg-red-50 text-red-700'
+              : uploadState.status === 'ok'
+                ? 'border-green-200 bg-green-50 text-green-700'
+                : 'border-blue-200 bg-blue-50 text-blue-700'
+          }`}
+        >
+          <span>
+            {uploadState.status === 'uploading' && `上传中: ${uploadState.message}`}
+            {uploadState.status === 'ok' && `✓ ${uploadState.message}`}
+            {uploadState.status === 'error' && `✗ ${uploadState.message}`}
+          </span>
+          {uploadState.status !== 'uploading' && (
+            <button
+              onClick={() => setUploadState({ status: 'idle' })}
+              className="text-current opacity-60 hover:opacity-100"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Tab navigation */}
       <div className="flex gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit">
