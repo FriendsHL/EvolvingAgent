@@ -1,5 +1,22 @@
 import { useState } from 'react'
 
+/**
+ * Total ordering over unknown values. Handles the common cases (numbers,
+ * strings, dates, booleans, null) and falls back to stringification for
+ * everything else so sorting never throws. Null/undefined always sort last.
+ */
+function compareUnknown(a: unknown, b: unknown): number {
+  if (a === b) return 0
+  if (a === null || a === undefined) return 1
+  if (b === null || b === undefined) return -1
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  if (typeof a === 'boolean' && typeof b === 'boolean') return (a ? 1 : 0) - (b ? 1 : 0)
+  if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime()
+  const as = typeof a === 'string' ? a : JSON.stringify(a)
+  const bs = typeof b === 'string' ? b : JSON.stringify(b)
+  return as < bs ? -1 : as > bs ? 1 : 0
+}
+
 export interface Column<T> {
   key: string
   label: string
@@ -27,8 +44,10 @@ export default function DataTable<T extends Record<string, unknown>>({
 
   const sorted = sortKey
     ? [...data].sort((a, b) => {
-        const av = a[sortKey], bv = b[sortKey]
-        const cmp = av < bv ? -1 : av > bv ? 1 : 0
+        // Row values are unknown per the generic constraint. Use a total
+        // ordering helper that handles strings / numbers / dates and
+        // falls back to string coercion for everything else.
+        const cmp = compareUnknown(a[sortKey], b[sortKey])
         return sortDir === 'asc' ? cmp : -cmp
       })
     : data

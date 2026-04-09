@@ -36,11 +36,11 @@ export default function MemoryPage() {
 
   const { data: expData, refetch } = useApi<{ experiences: Experience[] }>(
     () => search
-      ? apiGet(`/memory/search?q=${encodeURIComponent(search)}`)
-        .then((r: { results: { content: Experience }[] }) => ({
-          experiences: r.results.map((x: { content: Experience }) => x.content),
+      ? apiGet<{ results: { content: Experience }[] }>(`/memory/search?q=${encodeURIComponent(search)}`)
+        .then((r) => ({
+          experiences: r.results.map((x) => x.content),
         }))
-      : apiGet(`/memory/experiences?pool=${pool}${result ? `&result=${result}` : ''}`),
+      : apiGet<{ experiences: Experience[] }>(`/memory/experiences?pool=${pool}${result ? `&result=${result}` : ''}`),
     [pool, result, search],
   )
 
