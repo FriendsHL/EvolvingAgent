@@ -224,8 +224,27 @@ export class Planner {
       }
     }
 
+    // Tolerate two tool-call shapes observed from openai-compatible
+    // providers:
+    //
+    //   1. The "correct" shape: toolName === 'delegate', args contains
+    //      { subagent_type, task, rationale }. This is what Anthropic +
+    //      the ai SDK + qwen3-coder-plus-with-3-enum-values all return.
+    //
+    //   2. The bailian/qwen-coder quirk with 2 enum values: the SDK
+    //      surfaces toolName as the *enum value itself* (e.g. 'system'
+    //      or 'research'), and the args block STILL carries a
+    //      `subagent_type` field. Empirically observed on
+    //      qwen3-coder-plus via the openai-compatible endpoint. We
+    //      treat any tool call whose name matches a registered
+    //      sub-agent as an implicit delegate to that sub-agent.
+    //
+    // Whichever shape arrives, we derive the target from args first and
+    // fall back to toolName, then validate against the registry.
     const toolCalls = result.toolCalls ?? []
-    const delegateCall = toolCalls.find((tc) => tc.toolName === 'delegate')
+    const delegateCall =
+      toolCalls.find((tc) => tc.toolName === 'delegate') ??
+      toolCalls.find((tc) => registry.get(tc.toolName) !== undefined)
 
     if (delegateCall) {
       const args = delegateCall.args as {
@@ -233,7 +252,13 @@ export class Planner {
         task?: unknown
         rationale?: unknown
       }
-      const subagentType = typeof args.subagent_type === 'string' ? args.subagent_type : ''
+      const subagentTypeFromArgs =
+        typeof args.subagent_type === 'string' ? args.subagent_type : ''
+      // Prefer the explicit args field, but fall back to the tool name
+      // when the provider quirk flattened the enum value into it.
+      const subagentType =
+        subagentTypeFromArgs ||
+        (registry.get(delegateCall.toolName) ? delegateCall.toolName : '')
       const task = typeof args.task === 'string' ? args.task : userMessage
       const rationale =
         typeof args.rationale === 'string' && args.rationale.trim().length > 0

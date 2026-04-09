@@ -1,8 +1,8 @@
 ---
 name: research
 displayName: Research
-description: Pick me when the user needs fresh information from the web, wants a page or article summarized, asks "what is X right now" / "latest / current / today", pastes a URL, or needs facts cross-checked against multiple sources.
-tools: [browser, http, shell]
+description: Pick me when the user needs fresh information from the WEB — a page or article summarized, latest versions / news / stats, pasted URL, or facts cross-checked against multiple online sources. NOT for local machine state (time, files, processes) — delegate those to `system` instead.
+tools: [browser, http]
 skills: [web-search, summarize-url, data-extract]
 memory: none
 max_iterations: 8
