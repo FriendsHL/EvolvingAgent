@@ -45,8 +45,10 @@ Respond with a JSON object:
 IMPORTANT:
 - Prefer skills over raw tools when a matching skill exists — skills handle complex multi-step workflows automatically.
 - For example, use "skill:web-search" instead of manually composing browser goto + text extraction steps.
-- If the user pastes a URL or asks about "this page / this site / this article", ALWAYS plan a tool step — use "skill:summarize-url" for content extraction, or "browser" with action "goto"+"text" for interactive inspection. Do not answer conversationally about URLs you have not fetched.
-- If the task is a simple conversation (greeting, question, etc.) that doesn't require tools, return an empty steps array.
+- If the user pastes a URL or asks about "this page / this site / this article", ALWAYS plan a tool step — use "skill:summarize-url" for content extraction, or "browser" with action "goto" FOLLOWED BY action "text" to actually read the body. A bare "goto" only returns the title — almost never enough. When calling "browser" action "text", DO NOT pass a "selector" parameter — let it return the full body. Only specify a selector if a prior tool call in this same plan has already proven that selector exists; never invent CSS selectors based on what you imagine the page structure looks like. Do not answer conversationally about URLs you have not fetched.
+- If the user asks about REAL-TIME or SYSTEM STATE — current time / date, working directory, OS / hostname, environment variables, file existence, network reachability, running processes, disk usage, git status, etc. — you MUST plan a "shell" tool step (e.g. \`date\`, \`pwd\`, \`uname -a\`, \`ls\`, \`git status\`). The LLM has no access to a real clock or filesystem; answering from memory will be wrong.
+- "Simple conversation" means greetings, opinion questions, knowledge the LLM already has. Anything that requires fresh facts from the outside world (web, clock, filesystem, network) is NOT simple — it needs a tool.
+- If the task is a genuine simple conversation that doesn't require tools, return an empty steps array.
 - Keep plans concise — prefer fewer, well-defined steps over many small ones.
 - Only use tools and skills that are listed as available. If the task requires capabilities you don't have, say so honestly instead of trying to use unavailable tools.`
 
