@@ -27,10 +27,18 @@ export function agentsRoutes(registry: AgentRegistry, sessionManager?: SessionMa
     const toolNames = sessionManager.getTools().list().map((t) => t.name)
     const skillNames = sessionManager.getSkills().list().map((s) => s.name)
 
+    // Surface the user-facing preset name (from the env var) as the primary
+    // provider label, falling back to the underlying llm family. The Dashboard
+    // card does the same thing; using two different sources produced a
+    // confusing mismatch where Dashboard said "bailian-coding" and Agents
+    // said "openai-compatible" for the same runtime.
+    const providerPreset =
+      process.env.EVOLVING_AGENT_PROVIDER ?? llm.getProviderType()
     return c.json({
       id: 'main',
       name: 'Main Agent (default session)',
-      provider: llm.getProviderType(),
+      provider: providerPreset,
+      providerType: llm.getProviderType(),
       models: {
         planner: llm.getModelId('planner'),
         executor: llm.getModelId('executor'),

@@ -69,6 +69,11 @@ export default function ChatPage() {
   // D3b — message editing
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editDraft, setEditDraft] = useState('')
+  // Tracks which tool-call output was most recently copied, keyed as
+  // `${messageIndex}-${callIndex}`. Used to flip the "copy" label to
+  // "copied!" for ~1.5s after a click. Single cell is fine — only one
+  // feedback is shown at a time.
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -239,13 +244,18 @@ export default function ChatPage() {
             })
           } else if (event.type === 'tool-call') {
             const step = event.step ?? {}
+            // SSE wire shape from routes/chat.ts is:
+            //   { id, description, tool, params, result: {success, output, error}, duration }
+            // Previously we read `step.input` (always undefined → no INPUT
+            // card rendered) and `step.result.durationMs` (always undefined
+            // → no duration label). Both corrected below.
             const call: ToolCallSummary = {
               tool: String(step.tool ?? step.description ?? 'tool'),
               description: step.description,
               success: step?.result?.success !== false,
-              durationMs: typeof step?.result?.durationMs === 'number' ? step.result.durationMs : undefined,
+              durationMs: typeof step?.duration === 'number' ? step.duration : undefined,
               error: step?.result?.error,
-              input: step?.input,
+              input: step?.params,
               output: step?.result?.output,
             }
             setStatusText(
@@ -620,12 +630,20 @@ export default function ChatPage() {
                                     type="button"
                                     onClick={(e) => {
                                       e.preventDefault()
-                                      void navigator.clipboard.writeText(outputStr)
+                                      const key = `${i}-${ci}`
+                                      void navigator.clipboard.writeText(outputStr).then(() => {
+                                        setCopiedKey(key)
+                                        setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1500)
+                                      })
                                     }}
-                                    className="hover:text-blue-600 normal-case tracking-normal text-[10px] font-sans"
-                                    title="Copy"
+                                    className={`normal-case tracking-normal text-[10px] font-sans transition-colors ${
+                                      copiedKey === `${i}-${ci}`
+                                        ? 'text-emerald-600'
+                                        : 'text-gray-400 hover:text-blue-600'
+                                    }`}
+                                    title="Copy to clipboard"
                                   >
-                                    copy
+                                    {copiedKey === `${i}-${ci}` ? '✓ copied' : 'copy'}
                                   </button>
                                 </div>
                                 <div className="rounded bg-white border border-gray-200 px-2 py-1.5 whitespace-pre-wrap break-all max-h-48 overflow-auto text-gray-700">

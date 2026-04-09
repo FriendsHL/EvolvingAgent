@@ -41,6 +41,11 @@ export default function App() {
         <Route path="/hooks" element={<HooksPage />} />
         <Route path="/metrics" element={<MetricsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        {/* Catch-all: unknown URLs redirect to dashboard instead of
+            rendering a blank page. Defensive against stale bookmarks,
+            broken links, and tests that hit renamed paths (e.g.
+            /optimization was renamed to /ops). */}
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>
   )
