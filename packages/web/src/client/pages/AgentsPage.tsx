@@ -1,17 +1,6 @@
-import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useApi } from '../hooks/useApi.js'
-import { apiGet, apiPost, apiDelete } from '../api/client.js'
-
-interface AgentEntry {
-  id: string
-  name: string
-  description: string
-  provider: string | { type: string; models: Record<string, string> }
-  createdAt: string
-  updatedAt: string
-  [key: string]: unknown
-}
+import { apiGet } from '../api/client.js'
 
 interface MainAgentInfo {
   id: 'main'
@@ -24,39 +13,13 @@ interface MainAgentInfo {
   note: string
 }
 
-const PRESETS = ['anthropic', 'openai', 'bailian', 'bailian-coding', 'bailian-glm5', 'deepseek']
-
 export default function AgentsPage() {
-  const { data, refetch } = useApi<{ agents: AgentEntry[] }>(() => apiGet('/agents'))
   const { data: mainData } = useApi<MainAgentInfo>(() => apiGet('/agents/main'))
-  const agents = data?.agents ?? []
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ name: '', description: '', provider: 'bailian-coding' })
-
-  const handleCreate = async () => {
-    await apiPost('/agents', form)
-    setShowForm(false)
-    setForm({ name: '', description: '', provider: 'bailian-coding' })
-    refetch()
-  }
-
-  const handleDelete = async (id: string) => {
-    await apiDelete(`/agents/${id}`)
-    refetch()
-  }
-
-  const getProviderLabel = (provider: AgentEntry['provider']) => {
-    if (typeof provider === 'string') return provider
-    return `${provider.type} (${Object.values(provider.models).join(', ')})`
-  }
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-semibold">Agents</h2>
-        <button onClick={() => setShowForm(true)} className="bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700">
-          Create Agent
-        </button>
       </div>
 
       {/* Main agent — the one /api/chat actually uses */}
@@ -144,58 +107,29 @@ export default function AgentsPage() {
         </div>
       )}
 
-      <h3 className="text-sm font-medium text-gray-500 mb-3">Custom agent registry</h3>
-
-      {showForm && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-          <h3 className="text-sm font-medium mb-4">New Agent</h3>
-          <div className="space-y-3">
-            <input
-              placeholder="Agent name"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="w-full border rounded-lg px-3 py-2 text-sm"
-            />
-            <input
-              placeholder="Description"
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              className="w-full border rounded-lg px-3 py-2 text-sm"
-            />
-            <select
-              value={form.provider}
-              onChange={(e) => setForm({ ...form, provider: e.target.value })}
-              className="w-full border rounded-lg px-3 py-2 text-sm"
-            >
-              {PRESETS.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-          <div className="flex gap-2 mt-4">
-            <button onClick={handleCreate} className="bg-blue-600 text-white text-sm px-4 py-1.5 rounded-lg">Create</button>
-            <button onClick={() => setShowForm(false)} className="text-gray-500 text-sm px-4 py-1.5">Cancel</button>
-          </div>
-        </div>
-      )}
-
-      <div className="space-y-3">
-        {agents.length === 0 && !showForm && (
-          <div className="text-center text-gray-400 py-12">No agents configured yet</div>
-        )}
-        {agents.map((agent) => (
-          <div key={agent.id} className="bg-white rounded-xl border border-gray-200 p-4">
-            <div className="flex items-start justify-between">
-              <div>
-                <h3 className="text-sm font-medium">{agent.name}</h3>
-                {agent.description && <p className="text-xs text-gray-500 mt-1">{agent.description}</p>}
-                <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
-                  <span>Provider: <span className="font-medium text-gray-600">{getProviderLabel(agent.provider)}</span></span>
-                  <span>Created: {new Date(agent.createdAt).toLocaleDateString()}</span>
-                </div>
-              </div>
-              <button onClick={() => handleDelete(agent.id)} className="text-red-500 text-xs hover:underline">Delete</button>
-            </div>
-          </div>
-        ))}
+      {/* Phase 5 placeholder — Custom agent registry removed
+          In the current runtime the Main Agent shown above is env-driven
+          (EVOLVING_AGENT_PROVIDER). The old "create custom agent" form
+          only wrote an informational entry that did not affect chat
+          behavior, which was misleading. Phase 5 (router + role-shaped
+          sub-agents) will bring back real per-agent definitions loaded
+          from packages/core/src/sub-agents/builtin/*.md with identity
+          prompts, tool allowlists, and private memory namespaces.
+          Until then, there is nothing useful to display here beyond
+          the Main Agent card. */}
+      <div className="mt-2 rounded-xl border border-dashed border-gray-300 bg-gray-50 p-5 text-sm text-gray-600">
+        <div className="font-medium text-gray-800 mb-1">即将上线 · Sub-Agents (Phase 5)</div>
+        <p className="text-xs leading-relaxed">
+          当前架构下，<span className="font-mono text-gray-800">/api/chat</span> 使用的
+          <span className="font-medium"> 主 Agent </span>
+          由环境变量（<span className="font-mono">EVOLVING_AGENT_PROVIDER</span>）决定。
+          自定义 agent 列表在 Phase 5 会重启——那时你能在这里管理按<strong>角色</strong>定义的
+          sub-agent（调研 / 代码 / 分析 ...），每个 sub-agent 有自己的身份 prompt、
+          工具白名单和私有记忆。现在先不做 informational 的伪入口。
+        </p>
+        <p className="text-xs text-gray-500 mt-2">
+          想调整主 Agent 的 prompts 请走 <Link to="/prompts" className="text-blue-600 hover:underline">Prompts 页面</Link>。
+        </p>
       </div>
     </div>
   )
