@@ -93,6 +93,18 @@ describe('RecallLog', () => {
     expect(entries.map((e) => e.experienceId).sort()).toEqual(['g1', 'g2'])
   })
 
+  it('round-trips null similarity for keyword-only hits', async () => {
+    await log.append({
+      experienceId: 'exp-kw',
+      query: 'pure keyword',
+      similarity: null,
+      timestamp: isoToday(0),
+    })
+    const entries = await log.readRecent(1)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].similarity).toBeNull()
+  })
+
   it('returns [] for an empty dir', async () => {
     const entries = await log.readRecent(14)
     expect(entries).toEqual([])

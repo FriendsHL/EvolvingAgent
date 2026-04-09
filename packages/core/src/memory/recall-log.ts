@@ -13,8 +13,15 @@ import { join } from 'node:path'
 export interface RecallLogEntry {
   experienceId: string
   query: string
-  /** Cosine similarity at time of hit, 0..1 (clamped). */
-  similarity: number
+  /**
+   * Cosine similarity at time of hit, 0..1 (clamped). `null` when the
+   * hit came from a keyword- or tag-only match path that never computed
+   * a vector similarity — downstream scoring treats null as "unknown,
+   * exclude from avgRelevance" rather than folding a synthetic 0 into
+   * the average and dragging it down. Distinct-query / distinct-day
+   * counts still include null-similarity entries.
+   */
+  similarity: number | null
   /** ISO-8601 timestamp. The date portion decides the file bucket. */
   timestamp: string
   /** Optional — unknown in code paths that don't carry a session. */

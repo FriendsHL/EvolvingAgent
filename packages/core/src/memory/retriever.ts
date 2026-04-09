@@ -126,13 +126,20 @@ export class MemoryRetriever {
     }
 
     // Mark referenced experiences. S0: also accumulate totalRelevance and
-    // (if wired) append a recall-log line per hit. The similarity used is
-    // the cosine similarity from the vector search; hits that came in via
-    // keyword/tag only get `0` (no semantic evidence).
+    // (if wired) append a recall-log line per hit. The similarity used
+    // is the cosine similarity from the vector search; keyword/tag-only
+    // hits log `null` (unknown) rather than 0, so the maintenance sweep
+    // doesn't fold a synthetic zero into the avgRelevance average.
     const ts = new Date().toISOString()
     for (const r of results) {
-      const similarity = clamp01(similarityById.get(r.id) ?? 0)
-      await this.store.markReferenced(r.id, similarity)
+      const rawSim = similarityById.get(r.id)
+      const similarity = rawSim === undefined ? null : clamp01(rawSim)
+      // `markReferenced` still accepts a numeric bump for its running
+      // counter — keyword/tag-only hits contribute 0 to that in-memory
+      // counter. The next maintain() sweep will authoritatively rewrite
+      // totalRelevance from the recall-log window (skipping nulls), so
+      // the counter is only a best-effort intra-sweep accumulator.
+      await this.store.markReferenced(r.id, similarity ?? 0)
       if (this.recallLog) {
         try {
           await this.recallLog.append({

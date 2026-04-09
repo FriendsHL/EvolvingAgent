@@ -5,7 +5,7 @@ import { MemoryRetriever } from './retriever.js'
 import type { RetrieverConfig } from './retriever.js'
 import { VectorIndex } from './vector-index.js'
 import type { Embedder } from './embedder.js'
-import { computeAdmission, applyFeedbackToScore } from './admission.js'
+import { computeAdmission, applyFeedbackToScore, scoreConceptualRichness } from './admission.js'
 import { RecallLog } from './recall-log.js'
 import { nanoid } from 'nanoid'
 import type { SkillRegistry } from '../skills/skill-registry.js'
@@ -140,7 +140,15 @@ export class MemoryManager {
       tags,
       timestamp: new Date().toISOString(),
       ...(embedding ? { embedding } : {}),
-      health: { referencedCount: 0, contradictionCount: 0 },
+      // S0: conceptualRichness is populated at admission from tag
+      // density so the 0.06 weight in computeHealthScore actually has
+      // a signal to multiply. Spec eventually wants embedding L2 norm;
+      // tag density is the cheap placeholder.
+      health: {
+        referencedCount: 0,
+        contradictionCount: 0,
+        conceptualRichness: scoreConceptualRichness(tags),
+      },
       admissionScore: admission.score,
     }
 
