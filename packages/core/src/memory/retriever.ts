@@ -2,6 +2,7 @@ import type { Experience, RetrievalQuery, RetrievalResult } from '../types.js'
 import type { ExperienceStore } from './experience-store.js'
 import type { VectorIndex } from './vector-index.js'
 import type { Embedder } from './embedder.js'
+import type { RecallLog } from './recall-log.js'
 
 const RRF_K = 60 // Reciprocal Rank Fusion constant
 
@@ -34,6 +35,7 @@ export class MemoryRetriever {
     private vectorIndex?: VectorIndex,
     private embedder?: Embedder,
     private config?: RetrieverConfig,
+    private recallLog?: RecallLog,
   ) {
     const hasVector = Boolean(vectorIndex && embedder)
     this.vectorEnabled = config?.vectorEnabled ?? hasVector
@@ -76,8 +78,14 @@ export class MemoryRetriever {
 
     // 2. Vector ranking (if available)
     let vectorRanked: Array<[string, number]> = []
+    // Per-id cosine similarity — captured here (not in rankedLists which
+    // carry rank positions for RRF) so S0 scoring can feed a real similarity
+    // into recall-log and totalRelevance rather than the fused RRF score.
+    const similarityById = new Map<string, number>()
     if (this.vectorEnabled && this.embedder && this.vectorIndex) {
-      vectorRanked = await this.vectorSearch(query.text)
+      const { ranked, similarities } = await this.vectorSearch(query.text)
+      vectorRanked = ranked
+      for (const [id, sim] of similarities) similarityById.set(id, sim)
       if (vectorRanked.length > 0) {
         rankedLists.push({ list: vectorRanked, weight: this.weights.vector })
       }
@@ -117,9 +125,26 @@ export class MemoryRetriever {
       if (results.length >= topK) break
     }
 
-    // Mark referenced experiences
+    // Mark referenced experiences. S0: also accumulate totalRelevance and
+    // (if wired) append a recall-log line per hit. The similarity used is
+    // the cosine similarity from the vector search; hits that came in via
+    // keyword/tag only get `0` (no semantic evidence).
+    const ts = new Date().toISOString()
     for (const r of results) {
-      await this.store.markReferenced(r.id)
+      const similarity = clamp01(similarityById.get(r.id) ?? 0)
+      await this.store.markReferenced(r.id, similarity)
+      if (this.recallLog) {
+        try {
+          await this.recallLog.append({
+            experienceId: r.id,
+            query: query.text,
+            similarity,
+            timestamp: ts,
+          })
+        } catch {
+          // Recall-log failures must never break retrieval.
+        }
+      }
     }
 
     return results
@@ -131,19 +156,28 @@ export class MemoryRetriever {
 
   /**
    * Vector search: embed the query and search the vector index.
-   * Returns sorted list of [id, rank_position].
+   * Returns both:
+   *  - `ranked`: `[id, rank_position]` pairs for RRF fusion (unchanged shape).
+   *  - `similarities`: `[id, cosineSimilarity]` pairs so callers can feed a
+   *     real similarity score into recall-log / health scoring instead of
+   *     the fused rank-based number.
    */
-  private async vectorSearch(text: string): Promise<Array<[string, number]>> {
+  private async vectorSearch(text: string): Promise<{
+    ranked: Array<[string, number]>
+    similarities: Array<[string, number]>
+  }> {
     if (!this.embedder || !this.vectorIndex || this.vectorIndex.size() === 0) {
-      return []
+      return { ranked: [], similarities: [] }
     }
 
     const queryEmbedding = await this.embedder.embed(text)
     // Retrieve more candidates than we need; RRF fusion handles final ranking
     const results = this.vectorIndex.search(queryEmbedding, 50)
 
-    // Convert to [id, rank_position] format
-    return results.map((r, i) => [r.id, i + 1])
+    return {
+      ranked: results.map((r, i) => [r.id, i + 1]),
+      similarities: results.map((r) => [r.id, r.score]),
+    }
   }
 
   /**
@@ -232,4 +266,11 @@ export class MemoryRetriever {
       .split(/\s+/)
       .filter((t) => t.length > 2) // Skip very short tokens
   }
+}
+
+function clamp01(x: number): number {
+  if (!Number.isFinite(x)) return 0
+  if (x < 0) return 0
+  if (x > 1) return 1
+  return x
 }

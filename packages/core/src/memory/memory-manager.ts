@@ -6,6 +6,7 @@ import type { RetrieverConfig } from './retriever.js'
 import { VectorIndex } from './vector-index.js'
 import type { Embedder } from './embedder.js'
 import { computeAdmission, applyFeedbackToScore } from './admission.js'
+import { RecallLog } from './recall-log.js'
 import { nanoid } from 'nanoid'
 import type { SkillRegistry } from '../skills/skill-registry.js'
 
@@ -13,6 +14,7 @@ export class MemoryManager {
   readonly shortTerm: ShortTermMemory
   readonly experienceStore: ExperienceStore
   readonly retriever: MemoryRetriever
+  readonly recallLog: RecallLog
   private vectorIndex?: VectorIndex
   private embedder?: Embedder
   private skillRegistry?: SkillRegistry
@@ -41,11 +43,18 @@ export class MemoryManager {
       this.vectorIndex = new VectorIndex()
     }
 
+    // S0: recall-log lands next to experiences/ (same dataPath root as
+    // ExperienceStore). Wired into the retriever so every hit becomes a
+    // JSONL line, and surfaced on MemoryManager for the maintenance
+    // sweep that refreshes distinctQueries / distinctDays.
+    this.recallLog = new RecallLog(dataPath)
+
     this.retriever = new MemoryRetriever(
       this.experienceStore,
       this.vectorIndex,
       this.embedder,
       retrieverConfig,
+      this.recallLog,
     )
   }
 
@@ -53,6 +62,8 @@ export class MemoryManager {
     if (!this.experienceStoreShared) {
       await this.experienceStore.init()
     }
+
+    await this.recallLog.init()
 
     // Populate vector index from existing experiences that have embeddings
     if (this.vectorIndex) {
@@ -226,6 +237,6 @@ export class MemoryManager {
 
   /** Run periodic maintenance (pool transitions) */
   async maintain(): Promise<{ movedToStale: number; movedToArchive: number }> {
-    return this.experienceStore.maintain()
+    return this.experienceStore.maintain(this.recallLog)
   }
 }
