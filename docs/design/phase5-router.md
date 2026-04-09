@@ -271,6 +271,143 @@ DREAMS.md output, phase machine, or any LLM call. Those are Phase 6 and
 deliberately stay out — S0 is a pure scoring upgrade that lands before
 any router code, ~250 lines total across 4 files.
 
+### 3.0.5 Pre-S1 investigation results (locked 2026-04-09)
+
+Two questions from §7 ("Outstanding questions before code starts") were
+investigated before any router code went in. Their answers materially
+simplify the v1 implementation — the spec section below ( §3.1+ ) is
+revised in light of them. Read this subsection first.
+
+#### Question 1 — does bailian-coding honor enum-typed tool args?
+
+**Answer: YES, strictly.** Verdict from `packages/core/src/sub-agents/probe.ts`
+ran against the live env (`EVOLVING_AGENT_PROVIDER=bailian-coding`,
+`planner=qwen3-coder-plus`):
+
+```
+Verdict: function-calling-strict
+Tool call returned subagent_type="research" — strictly in [research, code, analysis]
+```
+
+The probe registers a `delegate` tool with `subagent_type: z.enum([...])`,
+asks the planner LLM to pick a sub-agent for a sample task, and verifies
+the returned `toolCalls[0].args.subagent_type` is in the enum. The
+provider passes the schema, and the model honors it at the token level.
+
+**Implication for Router design**:
+
+- Router uses **function calling**, not JSON-output mode. No `JSON.parse`,
+  no zod parse-failure fallback, no "what if the LLM picks 'researcher'
+  instead of 'research'" defensive code. The schema is the contract.
+- Router decision shape is the tool call itself:
+  ```ts
+  delegate({
+    subagent_type: 'research' | 'code' | 'analysis',  // enum-constrained
+    task: string,                                       // self-contained instruction
+    rationale: string,                                  // one-line why
+  })
+  ```
+- No separate `mode: 'direct' | 'delegate'` field needed — direct mode is
+  "no tool call, just text." The presence/absence of `toolCalls[0]` IS
+  the routing decision.
+- The catch-block fallback at `planner.ts:122-128` still needs inverting,
+  but the failure mode it inverts is now narrower: "model emitted text
+  instead of a tool call AND that text isn't a confident direct answer"
+  → still treat as `delegate research`.
+
+The probe + verdict are persisted to `data/phase5-probe.log` so the
+result survives across sessions; rerun the probe if the provider or
+model changes.
+
+#### Question 2 — can we reuse the existing `multi-agent/` infrastructure?
+
+**Answer: PARTIALLY — reuse `SubAgentManager`, skip `AgentCoordinator` +
+`TaskDelegator`.** Key findings from reading `packages/core/src/multi-agent/`
+and `packages/core/src/sub-agent/manager.ts`:
+
+**Reuse directly (no changes needed)**:
+
+- `SubAgentManager` (`sub-agent/manager.ts:153`) already provides:
+  - `spawn(spec)` with `mode: 'template'` or `mode: 'adhoc'`
+  - Full IPC protocol (TaskAssign / TaskResult / TaskProgress / TaskCancel /
+    ResourceRequest) over `InProcessTransport`
+  - Tool scoping via `sharedTools` whitelist (`manager.ts:133`)
+  - Progress event streaming → **directly solves** the "what does the user
+    see during sub-agent run" UX gap Critic flagged in §4
+  - Per-spawn cancel + cancelAll
+  - `resolveTemplate(templateId)` callback that lets us inject our own
+    markdown frontmatter loader as the template source
+
+The SubAgentManager is high-quality, well-tested, and almost exactly the
+runtime Phase 5 router needs. **Critic's "build a SubAgentRuntime class"
+in §3.1 is wrong**: that runtime already exists. The v1 implementation
+just calls `subAgentManager.spawn({ mode: 'adhoc', name, systemPrompt,
+tools, task })` and awaits the result.
+
+**Do NOT reuse**:
+
+- `AgentCoordinator.routeTask` (`coordinator.ts:235`) — it's a
+  keyword-substring matcher against `AgentProfile.capabilities`. That's
+  exactly the dumb classifier we want to *replace* with an LLM-driven
+  router. Wrong abstraction.
+- `TaskDelegator.delegate` (`delegation.ts:43`) — does LLM-driven
+  decomposition into subtasks then fan-out. Phase 5 v1 explicitly does
+  NOT do decomposition (Critic locked single-target route, no DAG, no
+  decomp).
+- `MessageBus` — pub/sub layer designed for multi-agent message passing.
+  Overkill for in-process single-user EA.
+
+**Production caller audit**: the entire `AgentCoordinator + TaskDelegator
++ MessageBus` system has exactly ONE production caller:
+`packages/web/src/server/routes/coordinate.ts:25`, which is the
+CoordinatePage backend (the "informational decoration" page). The chat
+hot path does not use it. There's also a dormant `Agent.delegate(task,
+coordinator)` at `agent.ts:1043-1057` that's wired but never called by
+chat. We leave both alone in v1: CoordinatePage keeps working, and the
+Phase 5 router goes around them entirely.
+
+#### Revised v1 file list (supersedes §3.1)
+
+The §3.1 file list below is updated based on the two findings above:
+
+| Action | File | Notes |
+|---|---|---|
+| **NEW** | `packages/core/src/sub-agents/types.ts` | `SubAgentDef` interface. Frontmatter fields per §2.4 |
+| **NEW** | `packages/core/src/sub-agents/loader.ts` | Markdown frontmatter parser → `Map<name, SubAgentDef>`. Loads from `builtin/*.md` first, then `data/sub-agents/*.md` overrides |
+| **NEW** | `packages/core/src/sub-agents/builtin/research.md` | Research persona body verbatim from §6.1 |
+| **NEW** | `packages/core/src/sub-agents/router-tool.ts` | Builds the `delegate` tool definition with `z.enum(loader.list().map(d => d.name))` for the `subagent_type` parameter — enum is dynamically derived from loaded SubAgentDefs so adding `code.md` later auto-extends the router |
+| **NEW** | `packages/core/src/sub-agents/probe.ts` | ✅ **already shipped** as part of the prework. Re-runnable any time |
+| **MODIFY** | `packages/core/src/planner/planner.ts` | Add `mode: 'router' \| 'solo'` ctor option (read from env `EA_ROUTER`). In router mode: build the delegate tool, pass `tools` to `llm.generate(...)`, branch on `result.toolCalls.length`. **Invert the catch fallback at `:122-128`**: parse failure → return a `delegate research` plan, not empty steps |
+| **MODIFY** | `packages/core/src/agent.ts` | When `processMessage` sees a router-mode plan whose first step is `tool: 'delegate'`, **call `subAgentManager.spawn({ mode: 'adhoc', name: def.name, systemPrompt: def.identityPrompt, tools: def.tools, task: { description: args.task } })` directly**. Wire `handle.onProgress` to the existing event emitter so the chat UI streams sub-agent progress. Await `handle.result()`. Surface `task.outcome === 'failure'` as an explicit error message, not a silent fallback (see acceptance criterion 5 in §3.5) |
+| **MODIFY** | `packages/core/src/session/manager.ts` | Instantiate `SubAgentManager` once per session with `dataPath` + the SessionManager's existing `sharedTools`, + a `resolveTemplate` callback that delegates to our markdown loader so `mode: 'template'` calls also work |
+
+**File count**: 5 new + 3 modified = **8 files, ~400-500 LOC** including
+the dynamic enum wiring and the SubAgentManager integration. Slightly
+larger than Critic's 5-file estimate but ~150 LOC smaller in net effort
+because there's no SubAgentRuntime class to invent — we get spawn / IPC /
+cancel / progress streaming for free.
+
+#### What this changes about the slice plan
+
+- **S1 (skeleton)** gets to ship a probe + types + loader + one
+  `research.md` + the router tool wiring in one commit, because there's
+  no runtime to scaffold separately.
+- **S2 (router LLM call wired)** is just the planner mode switch + the
+  catch-block inversion. ~50 LOC.
+- **S3 (research sub-agent end-to-end)** is the agent.ts integration with
+  SubAgentManager. The hardest part is making sure progress events flow
+  to the chat SSE without re-architecting either side.
+- **S4** (code + analysis sub-agents) becomes a copy-paste of `research.md`
+  with new bodies. No code changes — just add files and the loader picks
+  them up.
+- **S5** (memory partitioning) stays as written.
+- **S6** (UI) stays as written but is smaller because progress events
+  already exist.
+- **S7** (cutover) unchanged.
+
+The compressed slice 1 (probe + skeleton + research.md + tool wiring)
+is the natural unit for the next 3-agent dev cycle.
+
 ### 3.1 Files created
 
 - `packages/core/src/sub-agents/builtin/research.md` — the research sub-agent
