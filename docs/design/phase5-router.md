@@ -102,16 +102,16 @@ You are a research specialist. You are rigorous, skeptical, and...
 
 **Frontmatter fields (v1)**:
 
-| Field | Type | Default | Purpose |
-|---|---|---|---|
-| `name` | string | required | Unique id, matches router `subagent_type` enum value |
-| `description` | string | required | The `whenToPickMe` hint injected into the router's `delegate` tool schema |
-| `tools` | string[] | `[]` | Allowlist of low-level tools |
-| `disallowedTools` | string[] | `[]` | Denylist overrides allowlist (e.g. `code` disallows `rm -rf`) |
-| `skills` | string[] | `[]` | Allowlist of skills |
-| `model` | string | `inherit` | Reserved for Phase 6 (per-agent model override) |
-| `memory` | `'none' \| 'private' \| 'shared'` | `none` | Default is none per CC Pattern E |
-| `max_iterations` | number | `8` | Cap on ReAct loop iterations |
+| Field             | Type                              | Default   | Purpose                                                                   |
+| ----------------- | --------------------------------- | --------- | ------------------------------------------------------------------------- |
+| `name`            | string                            | required  | Unique id, matches router `subagent_type` enum value                      |
+| `description`     | string                            | required  | The `whenToPickMe` hint injected into the router's `delegate` tool schema |
+| `tools`           | string[]                          | `[]`      | Allowlist of low-level tools                                              |
+| `disallowedTools` | string[]                          | `[]`      | Denylist overrides allowlist (e.g. `code` disallows `rm -rf`)             |
+| `skills`          | string[]                          | `[]`      | Allowlist of skills                                                       |
+| `model`           | string                            | `inherit` | Reserved for Phase 6 (per-agent model override)                           |
+| `memory`          | `'none' \| 'private' \| 'shared'` | `none`    | Default is none per CC Pattern E                                          |
+| `max_iterations`  | number                            | `8`       | Cap on ReAct loop iterations                                              |
 
 Critical: `memory: none` is the **default**. Don't build the six-directory
 namespace tree the Designer proposed — there's zero evidence EA needs
@@ -180,6 +180,7 @@ consolidation weighting (`extensions/memory-core/src/dreaming.ts` in
 (cron/phase machine/diary narrative — those are Phase 6).
 
 **What exists today** (two separate scoring layers in EA):
+
 - Admission scoring, 5-D, at experience creation — `packages/core/src/memory/admission.ts`
   - `novelty / lessonValue / reusability / userSignal / complexity`
   - This layer stays untouched in S0.
@@ -332,14 +333,14 @@ Only used on the side branch; when the branch merges, the flag is deleted
 
 ## 4. Risks and mitigations
 
-| Risk | Likelihood | Mitigation |
-|---|---|---|
-| bailian-coding tool-calling doesn't support enum params | Medium | Read `provider.ts` early; fall back to structured-JSON-output router prompt |
-| Router direct mode misclassifies | High initially | Log every decision + rationale to jsonl; manual weekly sampling; no router-cases unit tests (Critic argued those are theater at this scale) |
-| Research sub-agent blows through tool calls on hard sites | Medium | `max_iterations` cap = 8; on exhausted, return partial + error |
-| Streaming UX degrades (silent router pause) | Medium | Surface router decision as a visible trace event in the chat UI before sub-agent starts; sub-agent tokens stream as today |
-| Phase 4 C self-optimizer gets confused by the new planner mode | Low (user confirmed whole-prompt tuning) | No action required; the optimizer treats the whole planner prompt as a unit |
-| Existing `multi-agent/coordinator.ts` is redundant | Medium | Read `coordinator.ts` + `delegation.ts` before writing any new code; if coordinator.routeTask() can drive the flow, v1 becomes a wiring exercise instead of new subsystem |
+| Risk                                                           | Likelihood                               | Mitigation                                                                                                                                                                |
+| -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| bailian-coding tool-calling doesn't support enum params        | Medium                                   | Read `provider.ts` early; fall back to structured-JSON-output router prompt                                                                                               |
+| Router direct mode misclassifies                               | High initially                           | Log every decision + rationale to jsonl; manual weekly sampling; no router-cases unit tests (Critic argued those are theater at this scale)                               |
+| Research sub-agent blows through tool calls on hard sites      | Medium                                   | `max_iterations` cap = 8; on exhausted, return partial + error                                                                                                            |
+| Streaming UX degrades (silent router pause)                    | Medium                                   | Surface router decision as a visible trace event in the chat UI before sub-agent starts; sub-agent tokens stream as today                                                 |
+| Phase 4 C self-optimizer gets confused by the new planner mode | Low (user confirmed whole-prompt tuning) | No action required; the optimizer treats the whole planner prompt as a unit                                                                                               |
+| Existing `multi-agent/coordinator.ts` is redundant             | Medium                                   | Read `coordinator.ts` + `delegation.ts` before writing any new code; if coordinator.routeTask() can drive the flow, v1 becomes a wiring exercise instead of new subsystem |
 
 ## 5. Rollback
 
