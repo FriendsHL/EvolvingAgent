@@ -84,6 +84,19 @@ export default function ChatPage() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  // AbortController for the in-flight SSE fetch. Aborted on session
+  // switch / new chat so the old stream stops and `sending` resets.
+  const abortRef = useRef<AbortController | null>(null)
+
+  const cancelInFlightStream = () => {
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+    setSending(false)
+    setStatusText('')
+    setStreamingContent('')
+  }
 
   const refreshSessions = useCallback(async (): Promise<SessionMetadata[]> => {
     try {
@@ -165,11 +178,13 @@ export default function ChatPage() {
 
   const handleSelect = (id: string) => {
     if (id === activeSessionId) return
+    cancelInFlightStream()
     setActiveSessionId(id)
     navigate(`/chat/${id}`)
   }
 
   const handleCreate = async () => {
+    cancelInFlightStream()
     try {
       const created = await apiPost<SessionMetadata>('/sessions', {})
       await refreshSessions()
@@ -371,20 +386,23 @@ export default function ChatPage() {
   }
 
   const sendMessage = async () => {
-    if (!input.trim() || sending) return
+    if (!input.trim()) return
     const userMsg = input.trim()
     setInput('')
-    setSending(true)
 
     setMessages((prev) => [
       ...prev,
       { role: 'user', content: userMsg, timestamp: new Date().toISOString() },
     ])
 
-    setStatusText('')
-    setStreamingContent('')
-
     try {
+      cancelInFlightStream()
+      const controller = new AbortController()
+      abortRef.current = controller
+      setSending(true)
+      setStatusText('')
+      setStreamingContent('')
+
       const res = await fetch(`/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -392,9 +410,14 @@ export default function ChatPage() {
           message: userMsg,
           sessionId: activeSessionId ?? undefined,
         }),
+        signal: controller.signal,
       })
       await pumpStream(res)
     } catch (err) {
+      // AbortError is expected when switching sessions mid-stream
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -475,6 +498,11 @@ export default function ChatPage() {
     ])
 
     try {
+      cancelInFlightStream()
+      const controller = new AbortController()
+      abortRef.current = controller
+      setSending(true)
+
       const res = await fetch('/api/chat/edit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -483,9 +511,11 @@ export default function ChatPage() {
           messageIndex: targetIndex,
           newContent,
         }),
+        signal: controller.signal,
       })
       await pumpStream(res)
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return
       setMessages((prev) => [
         ...prev,
         {
