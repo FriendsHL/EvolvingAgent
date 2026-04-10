@@ -847,6 +847,7 @@ export class Agent {
     | { type: 'status'; message: string }
     | { type: 'text-delta'; text: string }
     | { type: 'tool-call'; step: ExecutionStep }
+    | { type: 'delegate-call'; subagent: string; task: string; rationale: string }
     | {
         type: 'done'
         response: string
@@ -870,6 +871,7 @@ export class Agent {
     | { type: 'status'; message: string }
     | { type: 'text-delta'; text: string }
     | { type: 'tool-call'; step: ExecutionStep }
+    | { type: 'delegate-call'; subagent: string; task: string; rationale: string }
     | {
         type: 'done'
         response: string
@@ -942,7 +944,17 @@ export class Agent {
       this.subAgentManager &&
       this.subAgentRegistry
     ) {
+      const delegateParams = plan.steps[0].params as Record<string, unknown> | undefined
+      const delegateTarget = String(delegateParams?.subagent_type ?? 'unknown')
+      const delegateTask = String(delegateParams?.task ?? plan.steps[0].description)
+      const delegateRationale = String(delegateParams?.rationale ?? '')
       yield { type: 'status', message: 'Delegating to sub-agent...' }
+      yield {
+        type: 'delegate-call',
+        subagent: delegateTarget,
+        task: delegateTask,
+        rationale: delegateRationale,
+      }
       const delegateStart = Date.now()
       const answer = await this.runDelegateStep(plan.steps[0])
       yield { type: 'text-delta', text: answer }
