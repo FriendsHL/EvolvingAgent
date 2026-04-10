@@ -44,6 +44,7 @@ import { fileReadTool } from '../tools/file-read.js'
 import { fileWriteTool } from '../tools/file-write.js'
 import { httpTool } from '../tools/http.js'
 import { browserTool } from '../tools/browser.js'
+import { webFetchTool } from '../tools/web-fetch.js'
 import {
   createMetricsQueryTool,
   createLogSearchTool,
@@ -195,6 +196,7 @@ export class SessionManager {
       this.tools.register(fileWriteTool)
       this.tools.register(httpTool)
       this.tools.register(browserTool)
+      this.tools.register(webFetchTool)
     }
 
     // Skills

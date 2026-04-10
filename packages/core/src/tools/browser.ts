@@ -38,7 +38,15 @@ async function buildFreshContext(): Promise<import('playwright').BrowserContext>
   const pw = await getPw()
   if (!_browser || !_browser.isConnected()) {
     try {
-      _browser = await pw.chromium.launch({ headless: true })
+      _browser = await pw.chromium.launch({
+        headless: true,
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--no-sandbox',
+          '--disable-dev-shm-usage',
+        ],
+        env: {},  // Clean env — prevents parent's NODE_PATH/tsx/pnpm state from affecting TLS fingerprint
+      })
     } catch (err) {
       throw new Error(`Failed to launch browser: ${(err as Error).message}. Run "npx playwright install chromium" to install browser binaries.`)
     }
@@ -174,6 +182,10 @@ Typical reading flow: goto(url) → text() to capture body. A status >= 400 from
               throw err
             }
           }
+          // SPA post-navigation wait: give JS frameworks 0-5s to render after load fires
+          try {
+            await page.waitForLoadState('networkidle', { timeout: 5000 })
+          } catch { /* networkidle timeout is non-fatal — SPA may stream forever */ }
           const title = await page.title()
           const status = response?.status() ?? 0
           // Surface 4xx/5xx as a hint, but DO NOT mark the call failed —
