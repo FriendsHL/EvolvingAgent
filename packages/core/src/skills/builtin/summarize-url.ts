@@ -23,7 +23,7 @@ export const summarizeUrlSkill: ExecutableSkill = {
     ctx.emit(`Visiting: ${url}`)
 
     // Step 1: Navigate to the URL
-    const gotoResult = await ctx.useTool('browser', { action: 'goto', url, timeout: 15000 })
+    const gotoResult = await ctx.useTool('browser', { action: 'goto', url, timeout: 30000 })
     if (!gotoResult.success) {
       // Fallback to HTTP tool if browser fails
       ctx.emit('Browser failed, trying HTTP fallback...')
