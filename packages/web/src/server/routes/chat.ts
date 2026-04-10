@@ -116,6 +116,16 @@ export function chatRoutes(
                 }),
               })
               break
+            case 'sub-agent-progress':
+              await stream.writeSSE({
+                data: JSON.stringify({
+                  type: 'sub-agent-progress',
+                  subagent: (event as Record<string, unknown>).subagent,
+                  content: (event as Record<string, unknown>).content,
+                  timestamp: (event as Record<string, unknown>).timestamp,
+                }),
+              })
+              break
             case 'done':
               await sessionManager.persistSession(session)
               if (metricsCollector) {

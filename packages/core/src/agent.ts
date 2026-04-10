@@ -495,6 +495,9 @@ export class Agent {
    * Acceptance criterion 5 — sub-agent failures surface as explicit error
    * messages, never silent fallbacks to conversational hallucination.
    */
+  /** Progress events collected during a delegate step, surfaced in the streaming variant. */
+  private lastDelegateProgress: Array<{ subagent: string; content: string; timestamp: string }> = []
+
   private async runDelegateStep(step: import('./types.js').PlanStep): Promise<string> {
     if (!this.subAgentManager || !this.subAgentRegistry) {
       throw new Error('runDelegateStep called without router-mode dependencies')
@@ -539,12 +542,15 @@ export class Agent {
       },
     })
 
+    this.lastDelegateProgress = []
     handle.onProgress((p) => {
-      // The IPC protocol uses `status` + `summary` (not `stage`/`detail`).
+      const ts = new Date().toISOString()
+      const content = `${p.status}: ${p.summary}`
+      this.lastDelegateProgress.push({ subagent: def.name, content, timestamp: ts })
       this.emit({
         type: 'hook',
-        data: `[${def.name}] ${p.status}: ${p.summary}`,
-        timestamp: new Date().toISOString(),
+        data: `[${def.name}] ${content}`,
+        timestamp: ts,
       })
     })
 
@@ -847,6 +853,7 @@ export class Agent {
     | { type: 'text-delta'; text: string }
     | { type: 'tool-call'; step: ExecutionStep }
     | { type: 'delegate-call'; subagent: string; task: string; rationale: string }
+    | { type: 'sub-agent-progress'; subagent: string; content: string; timestamp: string }
     | {
         type: 'done'
         response: string
@@ -871,6 +878,7 @@ export class Agent {
     | { type: 'text-delta'; text: string }
     | { type: 'tool-call'; step: ExecutionStep }
     | { type: 'delegate-call'; subagent: string; task: string; rationale: string }
+    | { type: 'sub-agent-progress'; subagent: string; content: string; timestamp: string }
     | {
         type: 'done'
         response: string
@@ -956,6 +964,16 @@ export class Agent {
       }
       const delegateStart = Date.now()
       const answer = await this.runDelegateStep(plan.steps[0])
+      // Surface the sub-agent's progress events in the chat SSE so the
+      // user can see what the sub-agent did (browser.goto, shell, etc.)
+      for (const p of this.lastDelegateProgress) {
+        yield {
+          type: 'sub-agent-progress' as const,
+          subagent: p.subagent,
+          content: p.content,
+          timestamp: p.timestamp,
+        }
+      }
       yield { type: 'text-delta', text: answer }
       this.memory.addMessage('assistant', answer)
       this.emit({

@@ -37,6 +37,7 @@ export class Session {
     | { type: 'text-delta'; text: string }
     | { type: 'tool-call'; step: ExecutionStep }
     | { type: 'delegate-call'; subagent: string; task: string; rationale: string }
+    | { type: 'sub-agent-progress'; subagent: string; content: string; timestamp: string }
     | {
         type: 'done'
         response: string

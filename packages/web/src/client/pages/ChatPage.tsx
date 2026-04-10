@@ -23,6 +23,12 @@ interface DelegateSummary {
   rationale?: string
 }
 
+interface SubAgentStep {
+  subagent: string
+  content: string
+  timestamp: string
+}
+
 interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -35,6 +41,8 @@ interface Message {
   toolCalls?: ToolCallSummary[]
   /** Phase 5 router delegation info. */
   delegate?: DelegateSummary
+  /** Sub-agent execution progress steps. */
+  subAgentSteps?: SubAgentStep[]
 }
 
 interface HistoryMessage {
@@ -313,6 +321,27 @@ export default function ChatPage() {
               updated[updated.length - 1] = {
                 ...last,
                 toolCalls: [...(last.toolCalls ?? []), call],
+              }
+              return updated
+            })
+          } else if (event.type === 'sub-agent-progress') {
+            // Sub-agent execution steps — accumulate on the current assistant message
+            const step: SubAgentStep = {
+              subagent: String(event.subagent ?? ''),
+              content: String(event.content ?? ''),
+              timestamp: String(event.timestamp ?? new Date().toISOString()),
+            }
+            setStatusText(`[${step.subagent}] ${step.content}`)
+            setMessages((prev) => {
+              const updated = [...prev]
+              let last = updated[updated.length - 1]
+              if (!last || last.role !== 'assistant') {
+                updated.push({ role: 'assistant', content: '', timestamp: new Date().toISOString(), subAgentSteps: [step] })
+              } else {
+                updated[updated.length - 1] = {
+                  ...last,
+                  subAgentSteps: [...(last.subAgentSteps ?? []), step],
+                }
               }
               return updated
             })
@@ -643,6 +672,21 @@ export default function ChatPage() {
                         </div>
                       )}
                     </div>
+                  </div>
+                )}
+                {/* Sub-agent execution progress steps */}
+                {msg.role === 'assistant' && msg.subAgentSteps && msg.subAgentSteps.length > 0 && (
+                  <div className="w-full flex flex-col gap-1">
+                    {msg.subAgentSteps.map((step, si) => (
+                      <div
+                        key={si}
+                        className="text-[11px] rounded border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-gray-600 flex items-center gap-2"
+                      >
+                        <span className="text-[10px] text-gray-400 shrink-0">⚙️</span>
+                        <span className="font-mono text-blue-600 shrink-0">{step.subagent}</span>
+                        <span className="truncate">{step.content}</span>
+                      </div>
+                    ))}
                   </div>
                 )}
                 {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
