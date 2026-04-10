@@ -82,9 +82,16 @@ describe('SubAgentRegistry', () => {
     const registry = new SubAgentRegistry()
     await registry.init({ builtinDir: BUILTIN_DIR })
     const catalog = registry.describeForRouter()
-    expect(catalog).toMatch(/^- research: /)
-    // The description is collapsed to a single line.
+    // Each def gets one line, prefixed with "- <name>: ". The order is
+    // alphabetical so the first entry depends on how many builtins exist;
+    // use a shape check, not a hardcoded name.
+    expect(catalog).toMatch(/^- \w+: .+/)
     expect(catalog.split('\n').length).toBe(registry.list().length)
+    // All four builtins present in the catalog.
+    expect(catalog).toContain('- research:')
+    expect(catalog).toContain('- system:')
+    expect(catalog).toContain('- code:')
+    expect(catalog).toContain('- analysis:')
   })
 
   it('parseSubAgentMarkdown rejects a file with no frontmatter', () => {
