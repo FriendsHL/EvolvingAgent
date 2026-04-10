@@ -216,8 +216,16 @@ describe('Phase 5 router-mode integration (delegate dispatch)', () => {
         (e) =>
           e.type === 'hook' &&
           typeof e.data === 'string' &&
-          e.data.includes('router-mode') &&
-          e.data.includes('bypassing'),
+          e.data.includes('router-mode: delegating'),
+      ),
+    ).toBe(true)
+
+    // S5: delegate turns now run reflector + experience store, so we
+    // should also see the reflection event fire (non-fatal if reflector
+    // stub doesn't cooperate, but the emit should happen).
+    expect(
+      events.some(
+        (e) => e.type === 'reflecting',
       ),
     ).toBe(true)
 
