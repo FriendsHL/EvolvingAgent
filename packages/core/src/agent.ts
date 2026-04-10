@@ -80,7 +80,7 @@ export interface AgentConfig {
   shared?: AgentSharedDeps
   /**
    * Phase 5 router-mode dependencies. When both are provided AND the
-   * `EA_ROUTER` env flag is set (to anything other than 'off'), the
+   * sub-agent dependencies (SubAgentRegistry + SubAgentManager) are provided, the
    * planner runs in router mode and `delegate` plan steps are dispatched
    * through the shared SubAgentManager. Undefined on either side disables
    * router mode — behavior stays byte-identical to the pre-Phase-5 path.
@@ -147,7 +147,7 @@ export class Agent {
   /** Phase 5 — optional router-mode dependencies. */
   private subAgentManager?: SubAgentManager
   private subAgentRegistry?: SubAgentRegistry
-  /** Phase 5 — resolved once at construction from process.env.EA_ROUTER. */
+  /** Phase 5 — ON whenever SubAgentRegistry + SubAgentManager are provided. */
   private routerMode: boolean
   /** Task id for the in-flight processMessage call; used by the budget guard. */
   private currentTaskId: string | null = null
@@ -306,15 +306,14 @@ export class Agent {
       this.skills.list(),
     )
 
-    // Phase 5 — resolve router mode once at construction so the flag is
-    // stable for the whole Agent lifetime. Missing registry / manager
-    // silently disables the feature even when EA_ROUTER=on, so existing
-    // tests that don't set up Phase 5 deps keep working.
+    // Phase 5 — router mode is ON by default whenever the sub-agent
+    // dependencies are available. SessionManager always provides them,
+    // so every production chat turn goes through the router. Standalone
+    // Agent construction without these deps (tests, scripts) falls back
+    // to solo mode automatically.
     this.subAgentManager = config.subAgentManager
     this.subAgentRegistry = config.subAgentRegistry
-    const flag = process.env.EA_ROUTER
-    this.routerMode =
-      !!flag && flag !== 'off' && !!this.subAgentRegistry && !!this.subAgentManager
+    this.routerMode = !!this.subAgentRegistry && !!this.subAgentManager
 
     // Initialize components — pass skill registry + capability map to planner
     this.planner = new Planner(

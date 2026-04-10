@@ -3,7 +3,7 @@
 // ============================================================
 //
 // Exercises the full pipe:
-//   1. EA_ROUTER=on   → Agent constructs in router mode
+//   1. SubAgentRegistry + SubAgentManager provided → Agent constructs in router mode
 //   2. Planner calls a stubbed LLMProvider that returns a
 //      delegate tool call targeting 'research'
 //   3. Agent intercepts the delegate step and calls
@@ -132,19 +132,12 @@ class StubSubAgentManager extends SubAgentManager {
 
 describe('Phase 5 router-mode integration (delegate dispatch)', () => {
   let dataPath: string
-  const prevFlag = process.env.EA_ROUTER
 
   beforeEach(async () => {
     dataPath = await mkdtemp(join(tmpdir(), 'router-int-test-'))
-    process.env.EA_ROUTER = 'on'
   })
 
   afterEach(async () => {
-    if (prevFlag === undefined) {
-      delete process.env.EA_ROUTER
-    } else {
-      process.env.EA_ROUTER = prevFlag
-    }
     await rm(dataPath, { recursive: true, force: true })
   })
 
