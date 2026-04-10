@@ -13,7 +13,7 @@ export default function Layout() {
           pushes the entire layout wider than the viewport. */}
       <div className="flex-1 flex flex-col min-w-0">
         <Header />
-        <main className="flex-1 p-6 overflow-auto">
+        <main className="flex-1 p-6 overflow-auto break-words">
           <Outlet />
         </main>
       </div>

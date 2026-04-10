@@ -69,10 +69,10 @@ export default function ExperienceDetailPage() {
           {exp.steps.map((step, i) => (
             <div key={step.id} className="border border-gray-100 rounded-lg p-3">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-gray-400">#{i + 1}</span>
-                  <span className={`w-2 h-2 rounded-full ${step.result.success ? 'bg-green-500' : 'bg-red-500'}`} />
-                  <span className="text-sm">{step.description}</span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xs font-medium text-gray-400 shrink-0">#{i + 1}</span>
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${step.result.success ? 'bg-green-500' : 'bg-red-500'}`} />
+                  <span className="text-sm truncate">{step.description}</span>
                 </div>
                 <div className="flex items-center gap-3 text-xs text-gray-400">
                   {step.tool && <span className="bg-gray-100 px-2 py-0.5 rounded">{step.tool}</span>}
@@ -85,7 +85,7 @@ export default function ExperienceDetailPage() {
                 </pre>
               )}
               {step.result.error && (
-                <p className="mt-1 text-xs text-red-600">{step.result.error}</p>
+                <p className="mt-1 text-xs text-red-600 break-all">{step.result.error}</p>
               )}
             </div>
           ))}

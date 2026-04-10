@@ -127,7 +127,7 @@ export default function DashboardPage() {
       : 'All Agents'
 
   return (
-    <div>
+    <div className="overflow-hidden">
       {/* Header with filters */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">

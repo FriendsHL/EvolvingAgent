@@ -290,7 +290,7 @@ function CandidateCard({
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-sm font-medium flex-1">{cand.lesson}</p>
+        <p className="text-sm font-medium flex-1 min-w-0">{cand.lesson}</p>
         <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${statusStyles[cand.status]}`}>
           {cand.status}
         </span>
