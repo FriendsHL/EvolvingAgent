@@ -17,6 +17,12 @@ interface ToolCallSummary {
   output?: unknown
 }
 
+interface DelegateSummary {
+  subagent: string
+  task: string
+  rationale?: string
+}
+
 interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -27,6 +33,8 @@ interface Message {
   feedback?: 'positive' | 'negative'
   /** Tool calls the agent issued while producing this message. */
   toolCalls?: ToolCallSummary[]
+  /** Phase 5 router delegation info. */
+  delegate?: DelegateSummary
 }
 
 interface HistoryMessage {
@@ -228,10 +236,21 @@ export default function ChatPage() {
             if (!streamingStarted) {
               streamingStarted = true
               setStatusText('')
-              setMessages((prev) => [
-                ...prev,
-                { role: 'assistant', content: '', timestamp: new Date().toISOString() },
-              ])
+              // If a delegate-call already pushed an assistant message with
+              // the delegate badge, reuse it instead of pushing a second
+              // empty one (which would lose the badge).
+              setMessages((prev) => {
+                const last = prev[prev.length - 1]
+                if (last && last.role === 'assistant') {
+                  // Already have an assistant placeholder (from delegate-call
+                  // or tool-call) — keep it, don't push.
+                  return prev
+                }
+                return [
+                  ...prev,
+                  { role: 'assistant', content: '', timestamp: new Date().toISOString() },
+                ]
+              })
             }
             setStreamingContent((prev) => prev + event.content)
             setMessages((prev) => {
@@ -280,6 +299,30 @@ export default function ChatPage() {
                 ...last,
                 toolCalls: [...(last.toolCalls ?? []), call],
               }
+              return updated
+            })
+          } else if (event.type === 'delegate-call') {
+            // Phase 5 — attach delegation metadata to the current
+            // assistant message so the chat UI can render a blue badge.
+            const delegateInfo: DelegateSummary = {
+              subagent: String(event.subagent ?? 'unknown'),
+              task: String(event.task ?? ''),
+              rationale: event.rationale ? String(event.rationale) : undefined,
+            }
+            setStatusText(`Delegating → ${delegateInfo.subagent}`)
+            setMessages((prev) => {
+              const updated = [...prev]
+              let last = updated[updated.length - 1]
+              if (!last || last.role !== 'assistant') {
+                updated.push({
+                  role: 'assistant',
+                  content: '',
+                  timestamp: new Date().toISOString(),
+                  delegate: delegateInfo,
+                })
+                last = updated[updated.length - 1]
+              }
+              updated[updated.length - 1] = { ...last, delegate: delegateInfo }
               return updated
             })
           } else if (event.type === 'message') {
@@ -551,6 +594,27 @@ export default function ChatPage() {
           {messages.map((msg, i) => (
             <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group`}>
               <div className="max-w-[75%] flex flex-col items-start gap-1">
+                {/* Phase 5 router — delegation badge */}
+                {msg.role === 'assistant' && msg.delegate && (
+                  <div className="w-full rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 flex items-start gap-2">
+                    <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold shrink-0 mt-0.5" aria-hidden>
+                      →
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-semibold">{msg.delegate.subagent}</span>
+                        {msg.delegate.rationale && (
+                          <span className="text-blue-500 truncate">— {msg.delegate.rationale}</span>
+                        )}
+                      </div>
+                      {msg.delegate.task && (
+                        <div className="text-[11px] text-blue-600/70 mt-0.5 line-clamp-2">
+                          {msg.delegate.task}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
                   <div className="w-full flex flex-col gap-1.5">
                     {msg.toolCalls.map((call, ci) => {

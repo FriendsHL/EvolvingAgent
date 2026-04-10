@@ -40,6 +40,8 @@ import { PLANNER_SYSTEM_PROMPT } from './planner/planner.js'
 import { REFLECTOR_SYSTEM_PROMPT } from './reflector/reflector.js'
 import type { AgentCoordinator } from './multi-agent/coordinator.js'
 import type { PromptConfig, LLMCallMetrics } from './types.js'
+import type { SubAgentManager } from './sub-agent/manager.js'
+import type { SubAgentRegistry } from './sub-agents/loader.js'
 
 /**
  * Shared singletons that can be injected into an Agent so multiple Agent
@@ -76,6 +78,15 @@ export interface AgentConfig {
   provider?: ProviderConfig | PresetName // LLM provider config or preset name (default: auto-detect from env)
   /** Optional shared singletons (Phase 3 Batch 3 — multi-session). */
   shared?: AgentSharedDeps
+  /**
+   * Phase 5 router-mode dependencies. When both are provided AND the
+   * sub-agent dependencies (SubAgentRegistry + SubAgentManager) are provided, the
+   * planner runs in router mode and `delegate` plan steps are dispatched
+   * through the shared SubAgentManager. Undefined on either side disables
+   * router mode — behavior stays byte-identical to the pre-Phase-5 path.
+   */
+  subAgentManager?: SubAgentManager
+  subAgentRegistry?: SubAgentRegistry
 }
 
 type EventCallback = (event: AgentEvent) => void
@@ -133,6 +144,11 @@ export class Agent {
   private ownsCacheMetrics: boolean
   private promptRegistry: PromptRegistry
   private ownsPromptRegistry: boolean
+  /** Phase 5 — optional router-mode dependencies. */
+  private subAgentManager?: SubAgentManager
+  private subAgentRegistry?: SubAgentRegistry
+  /** Phase 5 — ON whenever SubAgentRegistry + SubAgentManager are provided. */
+  private routerMode: boolean
   /** Task id for the in-flight processMessage call; used by the budget guard. */
   private currentTaskId: string | null = null
   private listeners: EventCallback[] = []
@@ -290,8 +306,26 @@ export class Agent {
       this.skills.list(),
     )
 
+    // Phase 5 — router mode is ON by default whenever the sub-agent
+    // dependencies are available. SessionManager always provides them,
+    // so every production chat turn goes through the router. Standalone
+    // Agent construction without these deps (tests, scripts) falls back
+    // to solo mode automatically.
+    this.subAgentManager = config.subAgentManager
+    this.subAgentRegistry = config.subAgentRegistry
+    this.routerMode = !!this.subAgentRegistry && !!this.subAgentManager
+
     // Initialize components — pass skill registry + capability map to planner
-    this.planner = new Planner(this.llm, this.skills, this.capabilityMap, this.promptRegistry)
+    this.planner = new Planner(
+      this.llm,
+      this.skills,
+      this.capabilityMap,
+      this.promptRegistry,
+      {
+        routerMode: this.routerMode,
+        subAgentRegistry: this.subAgentRegistry,
+      },
+    )
     this.executor = new Executor(this.tools, this.hooks, this.skills, this.createSkillContext())
     this.reflector = new Reflector(this.llm, this.promptRegistry)
   }
@@ -453,6 +487,87 @@ export class Agent {
   }
 
   /**
+   * Phase 5 — dispatch a synthetic `delegate` plan step to the shared
+   * SubAgentManager. Always called with a single-step plan whose tool is
+   * 'delegate' and whose params carry `subagent_type`, `task`, and
+   * `rationale`. Returns the sub-agent's answer string.
+   *
+   * Acceptance criterion 5 — sub-agent failures surface as explicit error
+   * messages, never silent fallbacks to conversational hallucination.
+   */
+  private async runDelegateStep(step: import('./types.js').PlanStep): Promise<string> {
+    if (!this.subAgentManager || !this.subAgentRegistry) {
+      throw new Error('runDelegateStep called without router-mode dependencies')
+    }
+    const params = (step.params ?? {}) as {
+      subagent_type?: string
+      task?: string
+      rationale?: string
+    }
+    const subagentType = params.subagent_type ?? ''
+    const def = this.subAgentRegistry.get(subagentType)
+    if (!def) {
+      // Defensive — the planner's enum is built from the same registry,
+      // so this should only fire if config drifted between plan and
+      // execute (e.g. hot-reloaded builtins mid-request).
+      throw new Error(`Router picked unknown subagent_type "${subagentType}"`)
+    }
+
+    // S1: single-step opaque delegation. Reflector / experience storage
+    // / skill auto-creation / hook auto-creation are intentionally skipped
+    // on this path — the single synthesized step doesn't fit the multi-step
+    // JSON plan shape those stages expect. S5 (memory partitioning) will
+    // revisit this with a proper sub-agent reflection hook.
+    this.emit({
+      type: 'hook',
+      data: `router-mode: delegating to ${def.name}`,
+      timestamp: new Date().toISOString(),
+    })
+    this.emit({
+      type: 'executing',
+      data: `Delegating to ${def.name}: ${params.rationale ?? ''}`.trim(),
+      timestamp: new Date().toISOString(),
+    })
+
+    const handle = await this.subAgentManager.spawn({
+      mode: 'adhoc',
+      name: def.name,
+      systemPrompt: def.identityPrompt,
+      tools: def.tools,
+      task: {
+        description: params.task ?? step.description,
+      },
+    })
+
+    handle.onProgress((p) => {
+      // The IPC protocol uses `status` + `summary` (not `stage`/`detail`).
+      this.emit({
+        type: 'hook',
+        data: `[${def.name}] ${p.status}: ${p.summary}`,
+        timestamp: new Date().toISOString(),
+      })
+    })
+
+    try {
+      const taskResult = await handle.result()
+      if (taskResult.outcome === 'failure') {
+        const reason =
+          taskResult.reflection?.whatFailed?.[0] ??
+          taskResult.result.answer ??
+          'sub-agent task failed'
+        throw new Error(`Sub-agent ${def.name} failed: ${reason}`)
+      }
+      return taskResult.result.answer
+    } finally {
+      try {
+        await handle.close()
+      } catch {
+        // Best-effort — manager will clean up on shutdown regardless.
+      }
+    }
+  }
+
+  /**
    * Process a user message through the full agent loop:
    * Input → Retrieve → Plan → Execute → Respond → Reflect → Store
    */
@@ -523,6 +638,102 @@ export class Agent {
       const response = await this.generateConversationalResponse(userMessage)
       this.memory.addMessage('assistant', response)
       this.emit({ type: 'message', data: { role: 'assistant', content: response }, timestamp: new Date().toISOString() })
+      return response
+    }
+
+    // 4b. Phase 5 — router-mode delegate dispatch. Single synthetic step
+    // routed to a sub-agent via SubAgentManager. The sub-agent's answer
+    // becomes the assistant reply, then we run the reflector + experience
+    // pipeline so delegate turns contribute to the memory system the same
+    // way solo turns do. (S1 shipped this path without reflector/experience;
+    // S5 closes the gap.)
+    if (
+      plan.steps.length === 1 &&
+      plan.steps[0].tool === 'delegate' &&
+      this.subAgentManager &&
+      this.subAgentRegistry
+    ) {
+      const delegateStart = Date.now()
+      const response = await this.runDelegateStep(plan.steps[0])
+      this.memory.addMessage('assistant', response)
+      this.emit({
+        type: 'message',
+        data: { role: 'assistant', content: response },
+        timestamp: new Date().toISOString(),
+      })
+
+      // Reflector + experience store — same pipeline as solo mode (step 7–10
+      // below) but with a single synthetic ExecutionStep built from the
+      // delegate's output. This lets delegate turns produce experiences,
+      // lessons, auto-skills, and auto-hooks the same way multi-step solo
+      // turns do.
+      try {
+        const delegateParams = plan.steps[0].params as Record<string, unknown> | undefined
+        const executionSteps: import('./types.js').ExecutionStep[] = [{
+          id: plan.steps[0].id,
+          description: plan.steps[0].description,
+          tool: `delegate:${delegateParams?.subagent_type ?? 'unknown'}`,
+          params: plan.steps[0].params,
+          result: { success: true, output: response },
+          duration: Date.now() - delegateStart,
+        }]
+        const overallResult = 'success' as const
+
+        this.emit({ type: 'reflecting', data: 'Reflecting on delegation...', timestamp: new Date().toISOString() })
+        const { reflection, tags, suggestedHook, metrics: reflectMetrics } =
+          await this.reflector.reflect(userMessage, executionSteps, overallResult)
+        this.trackMetrics(reflectMetrics)
+
+        const storeResult = await this.memory.storeExperience(
+          userMessage, executionSteps, overallResult, reflection, tags,
+        )
+        if (storeResult.stored) {
+          this.emit({
+            type: 'hook',
+            data: `Experience stored (score: ${storeResult.score.toFixed(2)}, ${storeResult.decision})`,
+            timestamp: new Date().toISOString(),
+          })
+        }
+
+        // Auto-create skill from delegate reflection
+        if (reflection.suggestedSkill) {
+          try {
+            const compiled = this.skillCompiler.compile(reflection.suggestedSkill)
+            const validation = this.skillValidator.validate(compiled.skill, reflection.suggestedSkill)
+            if (validation.valid && !this.skills.get(compiled.skill.id)) {
+              this.skills.register(compiled.skill)
+              this.emit({
+                type: 'hook',
+                data: `Skill auto-created: ${compiled.skill.name} (${compiled.skill.id})`,
+                timestamp: new Date().toISOString(),
+              })
+              this.capabilityMap.refresh(this.tools.list(), this.skills.list())
+            }
+          } catch { /* Skill creation failed — non-fatal */ }
+        }
+
+        // Auto-create hook from delegate reflection
+        if (suggestedHook) {
+          try {
+            const compiled = this.hookCompiler.compile(suggestedHook)
+            this.hooks.registerEvolved(compiled.hook)
+            this.emit({
+              type: 'hook',
+              data: `Hook evolved (sandbox): ${compiled.hook.name}`,
+              timestamp: new Date().toISOString(),
+            })
+          } catch { /* Hook creation failed — non-fatal */ }
+        }
+      } catch (reflectErr) {
+        // Reflection failure is non-fatal — the user already got their
+        // answer. Log and move on.
+        this.emit({
+          type: 'hook',
+          data: `router-mode: post-delegate reflection failed: ${reflectErr instanceof Error ? reflectErr.message : String(reflectErr)}`,
+          timestamp: new Date().toISOString(),
+        })
+      }
+
       return response
     }
 
@@ -635,6 +846,7 @@ export class Agent {
     | { type: 'status'; message: string }
     | { type: 'text-delta'; text: string }
     | { type: 'tool-call'; step: ExecutionStep }
+    | { type: 'delegate-call'; subagent: string; task: string; rationale: string }
     | {
         type: 'done'
         response: string
@@ -658,6 +870,7 @@ export class Agent {
     | { type: 'status'; message: string }
     | { type: 'text-delta'; text: string }
     | { type: 'tool-call'; step: ExecutionStep }
+    | { type: 'delegate-call'; subagent: string; task: string; rationale: string }
     | {
         type: 'done'
         response: string
@@ -712,6 +925,80 @@ export class Agent {
       this.memory.addMessage('assistant', fullText)
       this.emit({ type: 'message', data: { role: 'assistant', content: fullText }, timestamp: new Date().toISOString() })
       yield { type: 'done', response: fullText, metrics: { cost: this.session.totalCost, tokens: this.session.totalTokens } }
+      return
+    }
+
+    // 4b. Phase 5 — router-mode delegate dispatch (streaming variant).
+    // The sub-agent's final answer is emitted as a single text-delta so
+    // the UI renders it; real progressive streaming from inside the sub-
+    // agent would require a streaming protocol extension we haven't built
+    // yet. The `hook` events surfaced by runDelegateStep's progress
+    // listener still flow through the existing emit() path.
+    //
+    // S5: after the answer streams, run the reflector + experience pipeline
+    // so delegate turns contribute to memory the same way solo turns do.
+    if (
+      plan.steps.length === 1 &&
+      plan.steps[0].tool === 'delegate' &&
+      this.subAgentManager &&
+      this.subAgentRegistry
+    ) {
+      const delegateParams = plan.steps[0].params as Record<string, unknown> | undefined
+      const delegateTarget = String(delegateParams?.subagent_type ?? 'unknown')
+      const delegateTask = String(delegateParams?.task ?? plan.steps[0].description)
+      const delegateRationale = String(delegateParams?.rationale ?? '')
+      yield { type: 'status', message: 'Delegating to sub-agent...' }
+      yield {
+        type: 'delegate-call',
+        subagent: delegateTarget,
+        task: delegateTask,
+        rationale: delegateRationale,
+      }
+      const delegateStart = Date.now()
+      const answer = await this.runDelegateStep(plan.steps[0])
+      yield { type: 'text-delta', text: answer }
+      this.memory.addMessage('assistant', answer)
+      this.emit({
+        type: 'message',
+        data: { role: 'assistant', content: answer },
+        timestamp: new Date().toISOString(),
+      })
+
+      // Reflector + experience (mirrors the non-streaming variant above)
+      try {
+        const delegateParams = plan.steps[0].params as Record<string, unknown> | undefined
+        const executionSteps: import('./types.js').ExecutionStep[] = [{
+          id: plan.steps[0].id,
+          description: plan.steps[0].description,
+          tool: `delegate:${delegateParams?.subagent_type ?? 'unknown'}`,
+          params: plan.steps[0].params,
+          result: { success: true, output: answer },
+          duration: Date.now() - delegateStart,
+        }]
+        yield { type: 'status', message: 'Reflecting...' }
+        const { reflection, tags, metrics: reflectMetrics } =
+          await this.reflector.reflect(userMessage, executionSteps, 'success')
+        this.trackMetrics(reflectMetrics)
+
+        const storeResult = await this.memory.storeExperience(
+          userMessage, executionSteps, 'success', reflection, tags,
+        )
+        if (storeResult.stored) {
+          this.emit({
+            type: 'hook',
+            data: `Experience stored (score: ${storeResult.score.toFixed(2)}, ${storeResult.decision})`,
+            timestamp: new Date().toISOString(),
+          })
+        }
+      } catch {
+        // Reflection failure is non-fatal — the user already got their answer.
+      }
+
+      yield {
+        type: 'done',
+        response: answer,
+        metrics: { cost: this.session.totalCost, tokens: this.session.totalTokens },
+      }
       return
     }
 

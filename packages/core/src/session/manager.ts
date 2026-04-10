@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir, rm } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { nanoid } from 'nanoid'
 
 import { Agent, type AgentSharedDeps } from '../agent.js'
@@ -20,6 +21,8 @@ import {
 import { ChannelRegistry } from '../channels/index.js'
 import type { CacheHealthAlertEvent } from '../channels/index.js'
 import { MCPManager } from '../mcp/manager.js'
+import { SubAgentManager } from '../sub-agent/manager.js'
+import { SubAgentRegistry } from '../sub-agents/loader.js'
 import { PromptRegistry } from '../prompts/registry.js'
 import { PromptOptimizer } from '../prompts/optimizer.js'
 import { createLLMProposer } from '../prompts/propose-llm.js'
@@ -145,6 +148,12 @@ export class SessionManager {
   // when no `mcp.json` exists. Owns the lifecycle of every MCP child
   // process and registers `mcp:<server>:<tool>` entries on `this.tools`.
   private mcpManager: MCPManager | null = null
+
+  // Phase 5 — shared sub-agent infrastructure. ONE registry + ONE manager
+  // per SessionManager (not per Session) so every session sees the same
+  // sub-agent catalog and lifecycle.
+  private subAgentRegistry!: SubAgentRegistry
+  private subAgentManager!: SubAgentManager
 
   constructor(deps: SessionManagerDeps) {
     this.deps = deps
@@ -321,10 +330,61 @@ export class SessionManager {
       }
     }
 
+    // Phase 5 — sub-agent registry + manager. One of each per
+    // SessionManager; every Session's Agent shares both. The registry is
+    // loaded from the shipped builtins plus an optional per-install
+    // override directory at `<dataPath>/sub-agents`. The manager is wired
+    // to the shared ToolRegistry so spawned sub-agents see the same tool
+    // set the main agent sees.
+    this.subAgentRegistry = new SubAgentRegistry()
+    // __dirname shim for ESM. The builtin dir is colocated with the
+    // compiled loader under packages/core/src/sub-agents/builtin.
+    const thisFileDir = dirname(fileURLToPath(import.meta.url))
+    const builtinDir = join(thisFileDir, '..', 'sub-agents', 'builtin')
+    try {
+      await this.subAgentRegistry.init({
+        builtinDir,
+        userDir: join(this.deps.dataPath, 'sub-agents'),
+      })
+    } catch (err) {
+      // Loader problems are non-fatal for session startup — without a
+      // registry, router mode silently stays off and the Agent falls back
+      // to solo mode, which is byte-identical to pre-Phase-5 behavior.
+      console.warn('[session-manager] SubAgentRegistry init failed:', err)
+    }
+
+    this.subAgentManager = new SubAgentManager({
+      dataPath: this.deps.dataPath,
+      provider: this.deps.provider,
+      sharedTools: this.tools,
+      // Bridge the markdown loader so spawn({mode:'template'}) works too.
+      // Adhoc spawns (the router-mode path) ignore this resolver.
+      resolveTemplate: (templateId) => {
+        const def = this.subAgentRegistry.get(templateId)
+        if (!def) return undefined
+        return {
+          name: def.name,
+          systemPrompt: def.identityPrompt,
+          tools: def.tools,
+        }
+      },
+    })
+
     // Load persisted session index from disk.
     await this.loadIndex()
 
     this.initialized = true
+  }
+
+  /** Phase 5 accessor — primarily for tests + web routes that want to
+   *  introspect the router catalog. */
+  getSubAgentManager(): SubAgentManager {
+    return this.subAgentManager
+  }
+
+  /** Phase 5 accessor — primarily for tests + web routes. */
+  getSubAgentRegistry(): SubAgentRegistry {
+    return this.subAgentRegistry
   }
 
   /** Access the live MCPManager (null when disabled or not yet initialized). */
@@ -594,6 +654,8 @@ export class SessionManager {
     const agent = new Agent({
       dataPath: this.deps.dataPath,
       shared: this.buildSharedDeps(),
+      subAgentManager: this.subAgentManager,
+      subAgentRegistry: this.subAgentRegistry,
     })
     await agent.init()
 
@@ -630,6 +692,8 @@ export class SessionManager {
     const agent = new Agent({
       dataPath: this.deps.dataPath,
       shared: this.buildSharedDeps(),
+      subAgentManager: this.subAgentManager,
+      subAgentRegistry: this.subAgentRegistry,
     })
     await agent.init()
 

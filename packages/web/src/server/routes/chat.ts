@@ -92,6 +92,16 @@ export function chatRoutes(
             case 'tool-call':
               await stream.writeSSE({ data: JSON.stringify({ type: 'tool-call', step: event.step }) })
               break
+            case 'delegate-call':
+              await stream.writeSSE({
+                data: JSON.stringify({
+                  type: 'delegate-call',
+                  subagent: (event as Record<string, unknown>).subagent,
+                  task: (event as Record<string, unknown>).task,
+                  rationale: (event as Record<string, unknown>).rationale,
+                }),
+              })
+              break
             case 'done':
               await sessionManager.persistSession(session)
               if (metricsCollector) {
@@ -443,6 +453,16 @@ export function chatRoutes(
               break
             case 'tool-call':
               await stream.writeSSE({ data: JSON.stringify({ type: 'tool-call', step: event.step }) })
+              break
+            case 'delegate-call':
+              await stream.writeSSE({
+                data: JSON.stringify({
+                  type: 'delegate-call',
+                  subagent: (event as Record<string, unknown>).subagent,
+                  task: (event as Record<string, unknown>).task,
+                  rationale: (event as Record<string, unknown>).rationale,
+                }),
+              })
               break
             case 'done':
               // Record assistant message and update session stats.

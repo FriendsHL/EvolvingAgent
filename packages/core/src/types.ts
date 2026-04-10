@@ -86,6 +86,12 @@ export interface ExperienceHealth {
   referencedCount: number
   contradictionCount: number
   lastReferenced?: string
+  // S0 — 6-signal scoring extras. Optional so existing persisted
+  // experiences don't need a schema migration; `undefined` reads as 0.
+  totalRelevance?: number      // running sum of similarity scores
+  distinctQueries?: number     // count of unique queries that surfaced it
+  distinctDays?: number        // count of unique YYYY-MM-DD it was hit on
+  conceptualRichness?: number  // 0..1, computed at admission from embedding norm or tag density
 }
 
 export interface Experience {
