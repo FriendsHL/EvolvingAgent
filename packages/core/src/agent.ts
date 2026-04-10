@@ -6,6 +6,7 @@ import { fileReadTool } from './tools/file-read.js'
 import { fileWriteTool } from './tools/file-write.js'
 import { httpTool } from './tools/http.js'
 import { browserTool } from './tools/browser.js'
+import { webFetchTool } from './tools/web-fetch.js'
 import { HookRunner } from './hooks/hook-runner.js'
 import { HookCompiler } from './hooks/hook-compiler.js'
 import { HookSandbox } from './hooks/hook-sandbox.js'
@@ -185,6 +186,7 @@ export class Agent {
       this.tools.register(fileWriteTool)
       this.tools.register(httpTool)
       this.tools.register(browserTool)
+      this.tools.register(webFetchTool)
     }
 
     // Initialize skill registry with built-in skills (8 total)

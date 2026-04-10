@@ -15,6 +15,7 @@ export { fileReadTool } from './tools/file-read.js'
 export { fileWriteTool } from './tools/file-write.js'
 export { httpTool } from './tools/http.js'
 export { browserTool, closeBrowser, checkBrowserHealth, resetBrowserState } from './tools/browser.js'
+export { webFetchTool } from './tools/web-fetch.js'
 export {
   createMetricsQueryTool,
   createLogSearchTool,
