@@ -52,7 +52,7 @@ export default function MemoryPage() {
   }
 
   return (
-    <div>
+    <div className="overflow-hidden">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-semibold">Memory</h2>
         {tab === 'experiences' && (
@@ -164,7 +164,7 @@ function ExperiencesView({
           <div
             key={exp.id}
             onClick={() => onNavigate(exp.id)}
-            className="bg-white rounded-xl border border-gray-200 p-4 cursor-pointer hover:border-blue-300 transition-colors"
+            className="bg-white rounded-xl border border-gray-200 p-4 cursor-pointer hover:border-blue-300 transition-colors overflow-hidden"
           >
             <div className="flex items-start justify-between">
               <div className="flex-1 min-w-0">
@@ -179,9 +179,9 @@ function ExperiencesView({
                   </span>
                 </div>
                 {exp.tags.length > 0 && (
-                  <div className="flex gap-1 mt-2">
+                  <div className="flex flex-wrap gap-1 mt-2">
                     {exp.tags.map((tag) => (
-                      <span key={tag} className="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded">
+                      <span key={tag} className="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded truncate max-w-[200px]">
                         {tag}
                       </span>
                     ))}

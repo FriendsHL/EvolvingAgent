@@ -262,15 +262,42 @@ function parseSkillFrontmatter(text: string): {
   const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
   if (!match) return {}
   const fm: Record<string, string | string[]> = {}
-  for (const line of match[1].split(/\r?\n/)) {
-    const kv = line.match(/^([a-zA-Z_][\w-]*)\s*:\s*(.*)$/)
+  const lines = match[1].split(/\r?\n/)
+
+  for (let i = 0; i < lines.length; i++) {
+    const kv = lines[i].match(/^([a-zA-Z_][\w-]*)\s*:\s*(.*)$/)
     if (!kv) continue
     const key = kv[1]
     let value: string | string[] = kv[2].trim()
+
+    // YAML block scalar: `key: |` or `key: >` followed by indented lines.
+    // Collect subsequent lines that start with whitespace and join them.
+    if (value === '|' || value === '>') {
+      const blockLines: string[] = []
+      while (i + 1 < lines.length && /^\s+/.test(lines[i + 1])) {
+        i++
+        blockLines.push(lines[i].replace(/^\s+/, ''))
+      }
+      value = value === '|'
+        ? blockLines.join('\n')        // literal: preserve newlines
+        : blockLines.join(' ')          // folded: join with spaces
+    }
+
+    // Also handle `key:` with value on the NEXT indented line (no | or >)
+    if (value === '' && i + 1 < lines.length && /^\s+/.test(lines[i + 1])) {
+      const blockLines: string[] = []
+      while (i + 1 < lines.length && /^\s+/.test(lines[i + 1])) {
+        i++
+        blockLines.push(lines[i].replace(/^\s+/, ''))
+      }
+      value = blockLines.join(' ')
+    }
+
     // Strip optional surrounding quotes
     if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
+      typeof value === 'string' &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
     ) {
       value = value.slice(1, -1)
     }
