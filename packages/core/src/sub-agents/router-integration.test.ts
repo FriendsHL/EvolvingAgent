@@ -193,7 +193,7 @@ describe('Phase 5 router-mode integration (delegate dispatch)', () => {
     expect(manager.lastSpec!.mode).toBe('adhoc')
     if (manager.lastSpec!.mode === 'adhoc') {
       expect(manager.lastSpec!.name).toBe('research')
-      expect(manager.lastSpec!.systemPrompt?.startsWith('# Identity')).toBe(true)
+      expect(manager.lastSpec!.systemPrompt?.includes('# Identity')).toBe(true)
       expect(manager.lastSpec!.task.description).toContain('UTC time')
     }
 

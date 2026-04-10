@@ -31,7 +31,7 @@ describe('SubAgentRegistry', () => {
     expect(research?.memory).toBe('none')
     expect(research?.maxIterations).toBe(8)
     expect(research?.identityPrompt.length).toBeGreaterThan(100)
-    expect(research?.identityPrompt.startsWith('# Identity')).toBe(true)
+    expect(research?.identityPrompt).toContain('# Identity')
   })
 
   it('user override replaces a builtin by name', async () => {

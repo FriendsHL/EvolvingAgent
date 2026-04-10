@@ -173,6 +173,47 @@ export class SubAgent {
       // success / failure / cancellation.
       this.agent.setSubAgentScope(assign.taskId, assign.config.tokenBudget)
 
+      // Forward the inner Agent's tool-level events as task:progress so the
+      // parent can display what the sub-agent is doing (browser.goto,
+      // shell:date, etc.) in the chat UI.
+      let stepsCompleted = 0
+      this.agent.onEvent(async (event) => {
+        if (event.type === 'tool-result' || event.type === 'tool-call') {
+          const step = event.data as Record<string, unknown> | undefined
+          const toolName = String(step?.tool ?? step?.description ?? 'tool')
+          const success = (step?.result as Record<string, unknown>)?.success !== false
+          const output = String((step?.result as Record<string, unknown>)?.output ?? '').slice(0, 150)
+          stepsCompleted++
+          const icon = success ? '✓' : '✗'
+          await this.emitProgress({
+            type: 'task:progress',
+            taskId: assign.taskId,
+            status: 'tool-calling',
+            summary: `${icon} ${toolName}: ${output || (success ? 'done' : 'failed')}`,
+            tokensUsed: 0,
+            stepsCompleted,
+          })
+        } else if (event.type === 'planning') {
+          await this.emitProgress({
+            type: 'task:progress',
+            taskId: assign.taskId,
+            status: 'thinking',
+            summary: typeof event.data === 'string' ? event.data : 'Analyzing task...',
+            tokensUsed: 0,
+            stepsCompleted,
+          })
+        } else if (event.type === 'executing') {
+          await this.emitProgress({
+            type: 'task:progress',
+            taskId: assign.taskId,
+            status: 'executing',
+            summary: typeof event.data === 'string' ? event.data : 'Running steps...',
+            tokensUsed: 0,
+            stepsCompleted,
+          })
+        }
+      })
+
       const answer = await this.agent.processMessage(composed)
 
       // === Cancellation checkpoint #2: result post-processing ===
