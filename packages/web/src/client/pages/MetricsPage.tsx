@@ -84,12 +84,20 @@ export default function MetricsPage() {
 
   return (
     <div>
-      <h2 className="text-xl font-semibold mb-6">Metrics</h2>
+      <h2 className="text-xl font-semibold mb-2">指标中心</h2>
+      <p className="text-sm text-gray-500 mb-1">
+        监控 Agent 的 LLM 调用、缓存效率和 token 预算使用情况。每条指标来自真实的 API 调用数据，不是估算。
+      </p>
+      <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 text-xs text-blue-900 mb-6 space-y-1">
+        <div><strong>Calls（调用日志）</strong>：每次 LLM 调用的模型、耗时、token 数、费用和缓存命中。可以看到哪个 model 最贵、哪次调用最慢。</div>
+        <div><strong>Cache health（缓存健康）</strong>：缓存命中率趋势——命中率越高，重复 prompt 的花费越低。低于 30% 时系统会触发告警 hook。</div>
+        <div><strong>Budget（预算）</strong>：每日 / 每 session / 每 task 的 token 使用量 vs 上限。超限后 agent 自动降级模型（如从 qwen3-coder-plus 降到 glm-5）。</div>
+      </div>
 
       <div className="flex gap-1 mb-6 border-b border-gray-200">
-        <TabButton active={tab === 'calls'} onClick={() => setTab('calls')}>Calls</TabButton>
-        <TabButton active={tab === 'cache'} onClick={() => setTab('cache')}>Cache health</TabButton>
-        <TabButton active={tab === 'budget'} onClick={() => setTab('budget')}>Budget</TabButton>
+        <TabButton active={tab === 'calls'} onClick={() => setTab('calls')}>Calls 调用日志</TabButton>
+        <TabButton active={tab === 'cache'} onClick={() => setTab('cache')}>Cache 缓存健康</TabButton>
+        <TabButton active={tab === 'budget'} onClick={() => setTab('budget')}>Budget 预算</TabButton>
       </div>
 
       {tab === 'calls' && <CallsTab />}

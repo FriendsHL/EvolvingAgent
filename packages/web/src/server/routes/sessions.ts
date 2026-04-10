@@ -1,4 +1,6 @@
 import { Hono } from 'hono'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { SessionManager } from '@evolving-agent/core'
 import type { SessionStore } from '../services/session-store.js'
 
@@ -13,6 +15,7 @@ import type { SessionStore } from '../services/session-store.js'
 export function sessionsRoutes(
   manager: SessionManager,
   legacyStore?: SessionStore,
+  dataPath?: string,
 ) {
   const app = new Hono()
 
@@ -79,6 +82,28 @@ export function sessionsRoutes(
     const id = c.req.param('id')
     await manager.delete(id)
     return c.json({ success: true })
+  })
+
+  // Get persisted event history for a session (JSONL → JSON array).
+  // Events are written to `<dataPath>/events/<sessionId>.jsonl` by the
+  // chat route's onEvent broadcast hook.
+  app.get('/:id/events', async (c) => {
+    if (!dataPath) return c.json({ events: [] })
+    const id = c.req.param('id')
+    const filePath = join(dataPath, 'events', `${id}.jsonl`)
+    try {
+      const raw = await readFile(filePath, 'utf-8')
+      const events = raw
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          try { return JSON.parse(line) } catch { return null }
+        })
+        .filter(Boolean)
+      return c.json({ events })
+    } catch {
+      return c.json({ events: [] })
+    }
   })
 
   return app

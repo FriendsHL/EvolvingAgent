@@ -64,13 +64,27 @@ export function chatRoutes(
     }
 
     // Wire agent events into the global SSE broadcast (powers the Event
-    // Stream page). onEvent is idempotent — Agent pushes to a Set, so
-    // re-registering across turns is harmless, but we only register once
-    // per session per process.
+    // Stream page) + persist to disk as JSONL (powers the per-session
+    // event history view). onEvent is idempotent — Agent pushes to a Set,
+    // so re-registering across turns is harmless, but we only register
+    // once per session per process.
     const sessionLike = session as unknown as { __broadcastWired?: boolean }
     if (!sessionLike.__broadcastWired) {
-      session.agent.onEvent((event) => {
-        broadcast({ sessionId: session.metadata.id, ...event })
+      const sid = session.metadata.id
+      session.agent.onEvent(async (event) => {
+        broadcast({ sessionId: sid, ...event })
+        // Persist to disk for later review
+        try {
+          const { appendFile, mkdir } = await import('node:fs/promises')
+          const { join } = await import('node:path')
+          const dir = join(dataPath, 'events')
+          await mkdir(dir, { recursive: true })
+          await appendFile(
+            join(dir, `${sid}.jsonl`),
+            JSON.stringify({ ...event, sessionId: sid, _ts: Date.now() }) + '\n',
+            'utf-8',
+          )
+        } catch { /* best-effort persistence */ }
       })
       sessionLike.__broadcastWired = true
     }

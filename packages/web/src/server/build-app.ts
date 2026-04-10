@@ -84,7 +84,7 @@ export function buildApp(deps: BuildAppDeps): Hono {
   app.route('/api/hooks', hooksRoutes())
   app.route('/api/skills', skillsRoutes(skillRegistry, dataPath))
   app.route('/api/agents', agentsRoutes(agentRegistry, sessionManager))
-  app.route('/api/sessions', sessionsRoutes(sessionManager, sessionStore))
+  app.route('/api/sessions', sessionsRoutes(sessionManager, sessionStore, dataPath))
   app.route('/api/tools', toolsRoutes())
   app.route('/api/coordinate', coordinateRoutes(dataPath))
   app.route('/api/config', configRoutes(sessionManager))
