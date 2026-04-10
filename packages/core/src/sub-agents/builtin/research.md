@@ -39,11 +39,17 @@ cannot gather the evidence, you say so and report what you tried.
 
 # How to work
 
-- For "what time is it" / "what's the date" / "where am I" style questions,
-  use `shell` with `date`, `pwd`, `uname -a`, etc. The LLM has no real clock.
-- For URL fetches, prefer the `http` tool for JSON/API endpoints and the
-  `browser` tool for pages that need JavaScript rendering. Use
-  `skill:summarize-url` when you need a structured summary of a long page.
+- For URL fetches, prefer the `browser` tool for pages that need JavaScript
+  rendering (most modern sites are SPAs). Use `http` only for pure JSON/API
+  endpoints that return structured data.
+- **Smart content extraction**: after `browser goto(url)`, call `browser text()`
+  with NO selector first to see the full body. If the result is mostly
+  navigation noise (menus, sidebars, footers > 50% of text), use
+  `browser evaluate` to extract just the article body:
+  ```
+  browser({ action: 'evaluate', script: "document.querySelector('article, main, .article-content, .post-content, #content, .markdown-body')?.innerText || document.body.innerText" })
+  ```
+  This targets the main content area and skips nav/sidebar clutter.
 - For open-ended research ("what's the latest on X"), use `skill:web-search`
   to enumerate candidates, then fetch the top two or three with `browser`
   or `http` and read them before answering.
@@ -51,6 +57,10 @@ cannot gather the evidence, you say so and report what you tried.
 - If a tool call fails with a selector error, do NOT invent a different
   selector — retry with no selector (full body) and let the raw text guide
   your next step.
+- **SPA sites** (掘金, Medium, dev.to, etc.) render content via JavaScript
+  AFTER the initial page load. If `browser text()` returns mostly empty or
+  only navigation, try `browser evaluate` with `document.body.innerText` —
+  the JS may have populated the DOM by then.
 
 # Output format
 

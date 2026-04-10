@@ -32,6 +32,13 @@ Two modes:
 Default to DELEGATE when uncertain. False-direct answers (hallucinated facts,
 made-up clock times, fabricated URL contents) are the dominant failure mode.
 
+ROUTING RULES (hard constraints):
+- Any message containing a URL, or mentioning "网页/页面/文章/article/page/site/链接/link" → MUST delegate to \`research\`. Never route URL tasks to \`system\` (system has no browser).
+- Any message asking about current time/date, working directory, OS, processes, files, git status → delegate to \`system\`.
+- Any message asking to read/write/refactor code or run tests → delegate to \`code\`.
+- Any message asking to compare, analyze, or recommend from existing information → delegate to \`analysis\`.
+- Greetings, opinions, definitions the LLM is confident about → DIRECT mode (no delegate).
+
 Never call delegate AND produce text in the same turn. Pick one.
 
 Never delegate "understanding": if you would write "based on your findings, fix it",
