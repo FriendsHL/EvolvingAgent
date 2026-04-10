@@ -14,10 +14,12 @@
     "@ai-sdk/openai": "^3.0.50",
     "@larksuiteoapi/node-sdk": "^1.60.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/turndown": "^5.0.6",
     "ai": "^6.0.146",
     "cron-parser": "^5.5.0",
     "nanoid": "^5.1.0",
     "playwright": "^1.59.1",
+    "turndown": "^7.2.4",
     "zod": "^3.24.0"
   },
   "devDependencies": {
